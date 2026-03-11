@@ -216,13 +216,36 @@
             <p class="text-muted mb-0">系统概览和统计信息</p>
           </div>
           <div class="version-info d-flex gap-2">
-            <span class="badge bg-secondary d-inline-flex align-items-center" id="systemVersion" style="cursor: pointer; gap: 0.25rem;" onclick="showChangelogModal()" title="点击查看更新日志">
+            <span class="badge d-inline-flex align-items-center version-pill" id="systemVersion" onclick="showChangelogModal()" title="点击查看更新日志">
               <i class="bi bi-info-circle me-1"></i>
               版本: <span id="versionNumber">加载中...</span>
             </span>
-            <button type="button" class="badge bg-success border-0 d-inline-flex align-items-center" id="dashboardHotUpdateBtn" style="display: none; cursor: pointer; gap: 0.25rem; padding: 0.45rem 0.75rem; line-height: 1.2;" onclick="performHotUpdate()">
-              <i class="bi bi-cloud-download me-1"></i>检查更新
-            </button>
+            <div class="btn-group dashboard-hot-update-group" id="dashboardHotUpdateGroup" style="display: none;">
+              <button type="button" class="btn btn-sm dashboard-hot-update-btn d-inline-flex align-items-center" id="dashboardHotUpdateBtn" onclick="performHotUpdate()">
+                <i class="bi bi-cloud-download me-1"></i>检查更新
+              </button>
+              <button type="button" class="btn btn-sm dashboard-hot-update-menu-btn dropdown-toggle dropdown-toggle-split" id="dashboardHotUpdateMenuBtn" data-bs-toggle="dropdown" aria-expanded="false">
+                <span class="visually-hidden">切换更新菜单</span>
+              </button>
+              <ul class="dropdown-menu dropdown-menu-end shadow-sm dashboard-hot-update-dropdown">
+                <li>
+                  <button type="button" class="dropdown-item" id="dashboardHotUpdateAutoCheckToggle" onclick="toggleHotUpdateAutoCheck()">
+                    关闭自动检查
+                  </button>
+                </li>
+                <li>
+                  <button type="button" class="dropdown-item" id="dashboardClearIgnoredVersionBtn" onclick="clearIgnoredUpdateVersion()">
+                    清除忽略版本
+                  </button>
+                </li>
+                <li><hr class="dropdown-divider"></li>
+                <li>
+                  <div class="dropdown-item-text small text-muted" id="dashboardHotUpdatePreferenceHint">
+                    当前浏览器生效
+                  </div>
+                </li>
+              </ul>
+            </div>
             <!-- 最新权益功能暂时隐藏
             <span class="badge bg-gradient" id="benefitsBadge" style="cursor: pointer; background: linear-gradient(135deg, #ff6b6b, #feca57, #48dbfb) !important; color: #fff; animation: benefitsGlow 2s ease-in-out infinite;" onclick="showBenefitsModal()">
               <i class="bi bi-gift me-1"></i>

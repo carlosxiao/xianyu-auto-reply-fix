@@ -3727,9 +3727,9 @@ async function checkAuth() {
         systemRestartBtn.style.display = 'inline-block';
         }
 
-        const dashboardHotUpdateBtn = document.getElementById('dashboardHotUpdateBtn');
-        if (dashboardHotUpdateBtn) {
-        dashboardHotUpdateBtn.style.display = 'inline-flex';
+        const dashboardHotUpdateGroup = document.getElementById('dashboardHotUpdateGroup');
+        if (dashboardHotUpdateGroup) {
+        dashboardHotUpdateGroup.style.display = 'inline-flex';
         }
 
         // 显示登录与注册设置
@@ -11567,7 +11567,7 @@ async function loadSystemSettings() {
             const outgoingConfigs = document.getElementById('outgoing-configs');
             const backupManagement = document.getElementById('backup-management');
             const systemRestartBtn = document.getElementById('system-restart-btn');
-            const dashboardHotUpdateBtn = document.getElementById('dashboardHotUpdateBtn');
+            const dashboardHotUpdateGroup = document.getElementById('dashboardHotUpdateGroup');
 
             if (apiSecuritySettings) {
                 apiSecuritySettings.style.display = isAdmin ? 'block' : 'none';
@@ -11584,12 +11584,13 @@ async function loadSystemSettings() {
             if (systemRestartBtn) {
                 systemRestartBtn.style.display = isAdmin ? 'inline-block' : 'none';
             }
-            if (dashboardHotUpdateBtn) {
-                dashboardHotUpdateBtn.style.display = isAdmin ? 'inline-flex' : 'none';
+            if (dashboardHotUpdateGroup) {
+                dashboardHotUpdateGroup.style.display = isAdmin ? 'inline-flex' : 'none';
             }
 
             // 如果是管理员，加载所有管理员设置
             if (isAdmin) {
+                refreshHotUpdatePreferencesMenu();
                 await loadAPISecuritySettings();
                 await loadRegistrationSettings();
                 await loadLoginInfoSettings();
@@ -11600,12 +11601,12 @@ async function loadSystemSettings() {
         console.error('获取用户信息失败:', error);
         // 出错时隐藏管理员功能
         const loginInfoSettings = document.getElementById('login-info-settings');
-        const dashboardHotUpdateBtn = document.getElementById('dashboardHotUpdateBtn');
+        const dashboardHotUpdateGroup = document.getElementById('dashboardHotUpdateGroup');
         if (loginInfoSettings) {
             loginInfoSettings.style.display = 'none';
         }
-        if (dashboardHotUpdateBtn) {
-            dashboardHotUpdateBtn.style.display = 'none';
+        if (dashboardHotUpdateGroup) {
+            dashboardHotUpdateGroup.style.display = 'none';
         }
     }
 }
@@ -14883,12 +14884,121 @@ let LOCAL_VERSION = DEFAULT_VERSION;
 
 // 缓存远程版本信息
 let remoteVersionInfo = null;
+const HOT_UPDATE_STORAGE_KEYS = {
+    autoCheckDisabled: 'hot_update_auto_check_disabled',
+    ignoredVersion: 'hot_update_ignored_version'
+};
+
+function isHotUpdateAutoCheckEnabled() {
+    return localStorage.getItem(HOT_UPDATE_STORAGE_KEYS.autoCheckDisabled) !== 'true';
+}
+
+function setHotUpdateAutoCheckEnabled(enabled) {
+    localStorage.setItem(HOT_UPDATE_STORAGE_KEYS.autoCheckDisabled, enabled ? 'false' : 'true');
+}
+
+function getIgnoredHotUpdateVersion() {
+    return localStorage.getItem(HOT_UPDATE_STORAGE_KEYS.ignoredVersion) || '';
+}
+
+function setIgnoredHotUpdateVersion(version) {
+    if (version) {
+        localStorage.setItem(HOT_UPDATE_STORAGE_KEYS.ignoredVersion, version);
+    }
+}
+
+function getHotUpdateTargetVersion(updateInfo = remoteVersionInfo) {
+    return updateInfo?.new_version || (updateInfo?.has_update ? updateInfo?.version : '') || '';
+}
+
+function shouldSuppressHotUpdateHint(updateInfo = remoteVersionInfo) {
+    const targetVersion = getHotUpdateTargetVersion(updateInfo);
+    return !isHotUpdateAutoCheckEnabled() || (!!targetVersion && getIgnoredHotUpdateVersion() === targetVersion);
+}
+
+function refreshHotUpdateButtonState(updateInfo = remoteVersionInfo) {
+    const dashboardHotUpdateGroup = document.getElementById('dashboardHotUpdateGroup');
+    const dashboardHotUpdateBtn = document.getElementById('dashboardHotUpdateBtn');
+    const dashboardHotUpdateMenuBtn = document.getElementById('dashboardHotUpdateMenuBtn');
+    if (!dashboardHotUpdateGroup || !dashboardHotUpdateBtn || !dashboardHotUpdateMenuBtn) return;
+
+    dashboardHotUpdateBtn.disabled = false;
+    dashboardHotUpdateBtn.innerHTML = '<i class="bi bi-cloud-download me-1"></i>检查更新';
+    dashboardHotUpdateMenuBtn.disabled = false;
+    dashboardHotUpdateGroup.classList.remove('has-update', 'is-loading');
+
+    const hasUpdate = Boolean(updateInfo && (updateInfo.has_update || updateInfo.new_version));
+    if (!hasUpdate || shouldSuppressHotUpdateHint(updateInfo)) {
+        return;
+    }
+
+    dashboardHotUpdateGroup.classList.add('has-update');
+    dashboardHotUpdateBtn.innerHTML = `<i class="bi bi-cloud-download me-1"></i>有新版本 ${getHotUpdateTargetVersion(updateInfo)}`;
+}
+
+function updateHotUpdatePreferenceStatus(message = '', type = 'info') {
+    if (message) {
+        showToast(message, type === 'success' ? 'success' : 'info');
+    }
+}
+
+function refreshHotUpdatePreferencesMenu() {
+    const autoCheckToggle = document.getElementById('dashboardHotUpdateAutoCheckToggle');
+    const ignoredVersionHint = document.getElementById('dashboardHotUpdatePreferenceHint');
+    const clearIgnoredBtn = document.getElementById('dashboardClearIgnoredVersionBtn');
+    const ignoredVersion = getIgnoredHotUpdateVersion();
+
+    if (autoCheckToggle) {
+        autoCheckToggle.textContent = isHotUpdateAutoCheckEnabled() ? '关闭自动检查' : '开启自动检查';
+    }
+
+    if (ignoredVersionHint) {
+        const autoCheckText = isHotUpdateAutoCheckEnabled() ? '自动检查：已开启' : '自动检查：已关闭';
+        ignoredVersionHint.textContent = ignoredVersion
+            ? `${autoCheckText} · 已忽略 ${ignoredVersion}`
+            : `${autoCheckText} · 当前未忽略任何版本`;
+    }
+
+    if (clearIgnoredBtn) {
+        clearIgnoredBtn.disabled = !ignoredVersion;
+    }
+}
+
+function toggleHotUpdateAutoCheck() {
+    const nextEnabled = !isHotUpdateAutoCheckEnabled();
+    setHotUpdateAutoCheckEnabled(nextEnabled);
+    refreshHotUpdatePreferencesMenu();
+    refreshHotUpdateButtonState();
+    updateHotUpdatePreferenceStatus(
+        nextEnabled
+            ? '自动检查更新已开启，当前浏览器进入系统时会自动检测'
+            : '自动检查更新已关闭，仍可手动点击“检查更新”',
+        'success'
+    );
+}
+
+function clearIgnoredUpdateVersion(showFeedback = true) {
+    localStorage.removeItem(HOT_UPDATE_STORAGE_KEYS.ignoredVersion);
+    refreshHotUpdatePreferencesMenu();
+    refreshHotUpdateButtonState();
+    if (showFeedback) {
+        updateHotUpdatePreferenceStatus('已清除忽略版本设置', 'success');
+    }
+}
 
 // 本地版本历史（远程服务禁用时使用）
 const LOCAL_VERSION_HISTORY = {
-    version: 'v1.5.7',
+    version: 'v1.5.8',
     intro: '本系统仅供个人学习研究使用，请勿用于商业用途。如有问题或建议，欢迎反馈。',
     versionHistory: [
+        {
+            version: 'v1.5.8',
+            date: '2026-03-11',
+            updates: [
+                '【新功能】热更新弹窗新增“本次跳过”和“忽略此版本”，支持按版本跳过当前更新提示',
+                '【优化】仪表盘检查更新入口改为按钮组，新增自动检查开关和忽略版本管理，设置仅当前浏览器生效'
+            ]
+        },
         {
             version: 'v1.5.7',
             date: '2026-03-11',
@@ -15282,27 +15392,17 @@ async function loadSystemVersion() {
             systemVersionBadge.onclick = () => showChangelogModal();
         }
 
+        refreshHotUpdateButtonState();
+
+        if (!isHotUpdateAutoCheckEnabled()) {
+            return;
+        }
+
         // 调用后端检查更新（复用热更新接口）
         try {
-            const response = await fetch('/api/update/check', {
-                method: 'GET',
-                headers: {
-                    'Accept': 'application/json',
-                    'Authorization': `Bearer ${authToken}`
-                }
-            });
-            if (response.ok) {
-                const result = await response.json();
-                if (result.success && result.data && result.data.has_update) {
-                    remoteVersionInfo = result.data;
-                    // 在绿色"检查更新"按钮上提示有新版本
-                    const dashboardBtn = document.getElementById('dashboardHotUpdateBtn');
-                    if (dashboardBtn) {
-                        dashboardBtn.innerHTML = '<i class="bi bi-cloud-download me-1"></i>有新版本 ' + result.data.new_version;
-                        dashboardBtn.classList.remove('bg-success');
-                        dashboardBtn.classList.add('bg-warning', 'text-dark');
-                    }
-                }
+            const checkResult = await checkHotUpdate();
+            if (checkResult && checkResult.has_update) {
+                refreshHotUpdateButtonState(checkResult);
             }
         } catch (e) {
             console.warn('版本检查失败:', e.message);
@@ -16225,6 +16325,10 @@ async function checkHotUpdate() {
             console.warn('热更新检查返回错误:', result.message);
             return null;
         }
+
+        if (result.data) {
+            remoteVersionInfo = result.data;
+        }
         
         return result.data;
         
@@ -16258,9 +16362,16 @@ async function performHotUpdate() {
         }
         
         // 显示确认对话框
-        const confirmed = await showHotUpdateConfirmDialog(checkResult);
+        const dialogAction = await showHotUpdateConfirmDialog(checkResult);
         
-        if (!confirmed) {
+        if (dialogAction !== 'confirm') {
+            if (dialogAction === 'ignore') {
+                const ignoredVersion = getHotUpdateTargetVersion(checkResult);
+                setIgnoredHotUpdateVersion(ignoredVersion);
+                refreshHotUpdatePreferencesMenu();
+                refreshHotUpdateButtonState(checkResult);
+                updateHotUpdatePreferenceStatus(`已忽略版本 ${ignoredVersion}`, 'success');
+            }
             resetHotUpdateBtn();
             return;
         }
@@ -16323,13 +16434,7 @@ function resetHotUpdateBtn() {
         hotUpdateBtn.disabled = false;
         hotUpdateBtn.innerHTML = '<i class="bi bi-cloud-download me-1"></i>一键热更新';
     }
-    const dashboardHotUpdateBtn = document.getElementById('dashboardHotUpdateBtn');
-    if (dashboardHotUpdateBtn) {
-        dashboardHotUpdateBtn.disabled = false;
-        dashboardHotUpdateBtn.innerHTML = '<i class="bi bi-cloud-download me-1"></i>检查更新';
-        dashboardHotUpdateBtn.classList.remove('bg-warning', 'text-dark');
-        dashboardHotUpdateBtn.classList.add('bg-success');
-    }
+    refreshHotUpdateButtonState();
 }
 
 function setHotUpdateButtonsLoading() {
@@ -16338,10 +16443,18 @@ function setHotUpdateButtonsLoading() {
         hotUpdateBtn.disabled = true;
         hotUpdateBtn.innerHTML = '<i class="bi bi-arrow-repeat spin me-1"></i>检查更新中...';
     }
+    const dashboardHotUpdateGroup = document.getElementById('dashboardHotUpdateGroup');
     const dashboardHotUpdateBtn = document.getElementById('dashboardHotUpdateBtn');
+    const dashboardHotUpdateMenuBtn = document.getElementById('dashboardHotUpdateMenuBtn');
     if (dashboardHotUpdateBtn) {
         dashboardHotUpdateBtn.disabled = true;
         dashboardHotUpdateBtn.innerHTML = '<i class="bi bi-arrow-repeat spin me-1"></i>检查更新中...';
+    }
+    if (dashboardHotUpdateMenuBtn) {
+        dashboardHotUpdateMenuBtn.disabled = true;
+    }
+    if (dashboardHotUpdateGroup) {
+        dashboardHotUpdateGroup.classList.add('is-loading');
     }
 }
 
@@ -16428,11 +16541,14 @@ async function showHotUpdateConfirmDialog(updateInfo) {
                             </div>
                         </div>
                         <div class="modal-footer py-3" style="background: #fff; border-top: 1px solid #e8ecf0;">
+                            <button type="button" class="btn btn-link text-decoration-none me-auto px-0" style="color: #6c757d;" id="hotUpdateIgnoreBtn">
+                                忽略此版本
+                            </button>
                             <button type="button" class="btn" style="background: #f0f0f0; color: #666; border: none; font-size: 15px; padding: 8px 20px;" data-bs-dismiss="modal" id="hotUpdateCancelBtn">
-                                取消
+                                本次跳过
                             </button>
                             <button type="button" class="btn" style="background: linear-gradient(135deg, #28a745, #20c997); color: #fff; border: none; font-size: 15px; padding: 8px 20px;" id="hotUpdateConfirmBtn">
-                                <i class="bi bi-check-lg me-1"></i>确认更新
+                                <i class="bi bi-check-lg me-1"></i>立即更新
                             </button>
                         </div>
                     </div>
@@ -16448,21 +16564,36 @@ async function showHotUpdateConfirmDialog(updateInfo) {
         
         document.body.insertAdjacentHTML('beforeend', modalHtml);
         
-        const modal = new bootstrap.Modal(document.getElementById('hotUpdateConfirmModal'));
+        const modalElement = document.getElementById('hotUpdateConfirmModal');
+        const modal = new bootstrap.Modal(modalElement);
+        let resolved = false;
+
+        const finish = (action) => {
+            if (resolved) return;
+            resolved = true;
+            modal.hide();
+            resolve(action);
+        };
         
         // 绑定按钮事件
         document.getElementById('hotUpdateConfirmBtn').onclick = () => {
-            modal.hide();
-            resolve(true);
+            finish('confirm');
         };
         
         document.getElementById('hotUpdateCancelBtn').onclick = () => {
-            modal.hide();
-            resolve(false);
+            finish('skip');
+        };
+
+        document.getElementById('hotUpdateIgnoreBtn').onclick = () => {
+            finish('ignore');
         };
         
-        document.getElementById('hotUpdateConfirmModal').addEventListener('hidden.bs.modal', () => {
-            document.getElementById('hotUpdateConfirmModal').remove();
+        modalElement.addEventListener('hidden.bs.modal', () => {
+            modalElement.remove();
+            if (!resolved) {
+                resolved = true;
+                resolve('skip');
+            }
         });
         
         modal.show();
