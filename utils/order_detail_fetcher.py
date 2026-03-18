@@ -7,7 +7,7 @@ import asyncio
 import time
 import sys
 import os
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, Tuple, List
 from playwright.async_api import async_playwright, Browser, BrowserContext, Page
 from loguru import logger
 import re
@@ -70,6 +70,11 @@ class OrderDetailFetcher:
         self.page: Optional[Page] = None
         self.headless = headless  # 保存headless设置
         self.cookie_id_for_log = cookie_id_for_log or "unknown"
+        self._last_order_status_source = 'unknown'
+        self._active_order_id = ''
+        self._captured_amount_candidates: List[Dict[str, Any]] = []
+        self._pending_response_tasks = set()
+        self._response_handler = None
 
         # 请求头配置
         self.headers = {
@@ -264,7 +269,8 @@ class OrderDetailFetcher:
                                     'spec_name_2': existing_order.get('spec_name_2', ''),
                                     'spec_value_2': existing_order.get('spec_value_2', ''),
                                     'quantity': existing_order.get('quantity', ''),
-                                    'amount': existing_order.get('amount', '')
+                                    'amount': existing_order.get('amount', ''),
+                                    'amount_source': 'cache',
                                 },
                                 'spec_name': existing_order.get('spec_name', ''),
                                 'spec_value': existing_order.get('spec_value', ''),
@@ -272,6 +278,7 @@ class OrderDetailFetcher:
                                 'spec_value_2': existing_order.get('spec_value_2', ''),
                                 'quantity': existing_order.get('quantity', ''),
                                 'amount': existing_order.get('amount', ''),
+                                'amount_source': 'cache',
                                 'timestamp': time.time(),
                                 'from_cache': True  # 标记数据来源
                             }
@@ -291,155 +298,163 @@ class OrderDetailFetcher:
                     logger.error("浏览器初始化失败，无法获取订单详情")
                     return None
 
-                # 构建订单详情URL
-                url = f"https://www.goofish.com/order-detail?orderId={order_id}&role=seller"
-                logger.info(f"开始访问订单详情页面: {url}")
+                self._register_response_capture_handler(order_id)
+                try:
+                    # 构建订单详情URL
+                    url = f"https://www.goofish.com/order-detail?orderId={order_id}&role=seller"
+                    logger.info(f"开始访问订单详情页面: {url}")
 
-                # 访问页面（带重试机制）
-                max_retries = 2
-                response = None
+                    # 访问页面（带重试机制）
+                    max_retries = 2
+                    response = None
 
-                for retry in range(max_retries + 1):
-                    try:
-                        response = await self.page.goto(url, wait_until='networkidle', timeout=timeout * 1000)
+                    for retry in range(max_retries + 1):
+                        try:
+                            response = await self.page.goto(url, wait_until='networkidle', timeout=timeout * 1000)
 
-                        if response and response.status == 200:
-                            break
-                        else:
-                            logger.warning(f"页面访问失败，状态码: {response.status if response else 'None'}，重试 {retry + 1}/{max_retries + 1}")
-
-                    except Exception as e:
-                        logger.warning(f"页面访问异常: {e}，重试 {retry + 1}/{max_retries + 1}")
-
-                        # 如果是浏览器连接问题，尝试重新初始化
-                        if "Target page, context or browser has been closed" in str(e):
-                            logger.info("检测到浏览器连接断开，尝试重新初始化...")
-                            if await self._ensure_browser_ready():
-                                logger.info("浏览器重新初始化成功，继续重试...")
-                                continue
+                            if response and response.status == 200:
+                                break
                             else:
-                                logger.error("浏览器重新初始化失败")
+                                logger.warning(f"页面访问失败，状态码: {response.status if response else 'None'}，重试 {retry + 1}/{max_retries + 1}")
+
+                        except Exception as e:
+                            logger.warning(f"页面访问异常: {e}，重试 {retry + 1}/{max_retries + 1}")
+
+                            # 如果是浏览器连接问题，尝试重新初始化
+                            if "Target page, context or browser has been closed" in str(e):
+                                logger.info("检测到浏览器连接断开，尝试重新初始化...")
+                                if await self._ensure_browser_ready():
+                                    logger.info("浏览器重新初始化成功，继续重试...")
+                                    self._register_response_capture_handler(order_id)
+                                    continue
+                                else:
+                                    logger.error("浏览器重新初始化失败")
+                                    return None
+
+                            if retry == max_retries:
+                                logger.error(f"页面访问最终失败: {e}")
                                 return None
 
-                        if retry == max_retries:
-                            logger.error(f"页面访问最终失败: {e}")
-                            return None
+                            await asyncio.sleep(1)  # 重试前等待1秒
 
-                        await asyncio.sleep(1)  # 重试前等待1秒
+                    if not response or response.status != 200:
+                        logger.error(f"页面访问最终失败，状态码: {response.status if response else 'None'}")
+                        return None
 
-                if not response or response.status != 200:
-                    logger.error(f"页面访问最终失败，状态码: {response.status if response else 'None'}")
-                    return None
+                    logger.info("页面加载成功，等待内容渲染...")
 
-                logger.info("页面加载成功，等待内容渲染...")
-
-                # 等待页面完全加载
-                try:
-                    await self.page.wait_for_load_state('networkidle')
-                except Exception as e:
-                    logger.warning(f"等待页面加载状态失败: {e}")
-                    # 继续执行，不中断流程
-
-                # 额外等待确保动态内容加载完成
-                await asyncio.sleep(3)
-
-                # 获取并解析SKU信息
-                sku_info = await self._get_sku_content()
-
-                # 获取订单状态
-                order_status = await self._get_order_status()
-                logger.info(f"订单 {order_id} 状态: {order_status}")
-
-                # 解析失败时，刷新页面后重试一次，降低偶发结构变化/异步渲染导致的漏解析概率
-                if not self._is_order_detail_parse_success(sku_info, order_status):
-                    self._log_order_detail_parse_event(
-                        event_name="ORDER_DETAIL_PARSE_ALERT",
-                        order_id=order_id,
-                        url=url,
-                        attempt="first",
-                        sku_info=sku_info,
-                        order_status=order_status,
-                        level="warning"
-                    )
-                    logger.warning(
-                        f"订单 {order_id} 首次解析结果不完整，准备刷新页面重试: "
-                        f"sku_info={sku_info}, order_status={order_status}"
-                    )
+                    # 等待页面完全加载
                     try:
-                        await self.page.reload(wait_until='networkidle', timeout=timeout * 1000)
-                        await asyncio.sleep(2)
-                        retry_sku_info = await self._get_sku_content()
-                        retry_order_status = await self._get_order_status()
-                        logger.info(
-                            f"订单 {order_id} 重试解析结果: sku_info={retry_sku_info}, "
-                            f"order_status={retry_order_status}"
-                        )
+                        await self.page.wait_for_load_state('networkidle')
+                    except Exception as e:
+                        logger.warning(f"等待页面加载状态失败: {e}")
+                        # 继续执行，不中断流程
 
-                        if self._is_order_detail_parse_success(retry_sku_info, retry_order_status):
-                            sku_info = retry_sku_info
-                            order_status = retry_order_status
-                            logger.info(f"订单 {order_id} 刷新重试后解析成功")
-                            self._log_order_detail_parse_event(
-                                event_name="ORDER_DETAIL_PARSE_RECOVERED",
-                                order_id=order_id,
-                                url=url,
-                                attempt="retry",
-                                sku_info=sku_info,
-                                order_status=order_status,
-                                level="info"
-                            )
-                        else:
-                            logger.warning(f"订单 {order_id} 刷新重试后仍未解析到完整详情")
-                            self._log_order_detail_parse_event(
-                                event_name="ORDER_DETAIL_PARSE_ALERT",
-                                order_id=order_id,
-                                url=url,
-                                attempt="retry_final",
-                                sku_info=retry_sku_info,
-                                order_status=retry_order_status,
-                                level="warning"
-                            )
-                    except Exception as retry_e:
-                        logger.warning(f"订单 {order_id} 刷新重试解析异常: {retry_e}")
+                    # 额外等待确保动态内容加载完成
+                    await asyncio.sleep(3)
+
+                    # 获取并解析SKU信息
+                    sku_info = await self._get_sku_content()
+
+                    # 获取订单状态
+                    order_status = await self._get_order_status()
+                    logger.info(f"订单 {order_id} 状态: {order_status}")
+
+                    # 解析失败时，刷新页面后重试一次，降低偶发结构变化/异步渲染导致的漏解析概率
+                    if not self._is_order_detail_parse_success(sku_info, order_status):
                         self._log_order_detail_parse_event(
                             event_name="ORDER_DETAIL_PARSE_ALERT",
                             order_id=order_id,
                             url=url,
-                            attempt="retry_exception",
+                            attempt="first",
                             sku_info=sku_info,
                             order_status=order_status,
-                            level="warning",
-                            error=str(retry_e)
+                            level="warning"
                         )
+                        logger.warning(
+                            f"订单 {order_id} 首次解析结果不完整，准备刷新页面重试: "
+                            f"sku_info={sku_info}, order_status={order_status}"
+                        )
+                        try:
+                            await self.page.reload(wait_until='networkidle', timeout=timeout * 1000)
+                            await asyncio.sleep(2)
+                            retry_sku_info = await self._get_sku_content()
+                            retry_order_status = await self._get_order_status()
+                            logger.info(
+                                f"订单 {order_id} 重试解析结果: sku_info={retry_sku_info}, "
+                                f"order_status={retry_order_status}"
+                            )
 
-                # 获取页面标题
-                try:
-                    title = await self.page.title()
-                except Exception as e:
-                    logger.warning(f"获取页面标题失败: {e}")
-                    title = f"订单详情 - {order_id}"
+                            if self._is_order_detail_parse_success(retry_sku_info, retry_order_status):
+                                sku_info = retry_sku_info
+                                order_status = retry_order_status
+                                logger.info(f"订单 {order_id} 刷新重试后解析成功")
+                                self._log_order_detail_parse_event(
+                                    event_name="ORDER_DETAIL_PARSE_RECOVERED",
+                                    order_id=order_id,
+                                    url=url,
+                                    attempt="retry",
+                                    sku_info=sku_info,
+                                    order_status=order_status,
+                                    level="info"
+                                )
+                            else:
+                                logger.warning(f"订单 {order_id} 刷新重试后仍未解析到完整详情")
+                                self._log_order_detail_parse_event(
+                                    event_name="ORDER_DETAIL_PARSE_ALERT",
+                                    order_id=order_id,
+                                    url=url,
+                                    attempt="retry_final",
+                                    sku_info=retry_sku_info,
+                                    order_status=retry_order_status,
+                                    level="warning"
+                                )
+                        except Exception as retry_e:
+                            logger.warning(f"订单 {order_id} 刷新重试解析异常: {retry_e}")
+                            self._log_order_detail_parse_event(
+                                event_name="ORDER_DETAIL_PARSE_ALERT",
+                                order_id=order_id,
+                                url=url,
+                                attempt="retry_exception",
+                                sku_info=sku_info,
+                                order_status=order_status,
+                                level="warning",
+                                error=str(retry_e)
+                            )
 
-                result = {
-                    'order_id': order_id,
-                    'url': url,
-                    'title': title,
-                    'sku_info': sku_info,  # 包含解析后的规格信息
-                    'spec_name': sku_info.get('spec_name', '') if sku_info else '',
-                    'spec_value': sku_info.get('spec_value', '') if sku_info else '',
-                    'spec_name_2': sku_info.get('spec_name_2', '') if sku_info else '',  # 规格2名称
-                    'spec_value_2': sku_info.get('spec_value_2', '') if sku_info else '',  # 规格2值
-                    'quantity': sku_info.get('quantity', '') if sku_info else '',  # 数量
-                    'amount': sku_info.get('amount', '') if sku_info else '',      # 金额
-                    'order_status': order_status,  # 订单状态
-                    'timestamp': time.time(),
-                    'from_cache': False  # 标记数据来源
-                }
+                    # 获取页面标题
+                    try:
+                        title = await self.page.title()
+                    except Exception as e:
+                        logger.warning(f"获取页面标题失败: {e}")
+                        title = f"订单详情 - {order_id}"
 
-                logger.info(f"订单详情获取成功: {order_id}")
-                if sku_info:
-                    logger.info(f"规格信息 - 名称: {result['spec_name']}, 值: {result['spec_value']}")
-                    logger.info(f"数量: {result['quantity']}, 金额: {result['amount']}")
-                return result
+                    result = {
+                        'order_id': order_id,
+                        'url': url,
+                        'title': title,
+                        'sku_info': sku_info,  # 包含解析后的规格信息
+                        'spec_name': sku_info.get('spec_name', '') if sku_info else '',
+                        'spec_value': sku_info.get('spec_value', '') if sku_info else '',
+                        'spec_name_2': sku_info.get('spec_name_2', '') if sku_info else '',  # 规格2名称
+                        'spec_value_2': sku_info.get('spec_value_2', '') if sku_info else '',  # 规格2值
+                        'quantity': sku_info.get('quantity', '') if sku_info else '',  # 数量
+                        'amount': sku_info.get('amount', '') if sku_info else '',      # 金额
+                        'amount_source': sku_info.get('amount_source', '') if sku_info else '',
+                        'order_status': order_status,  # 订单状态
+                        'order_status_source': self._last_order_status_source,
+                        'timestamp': time.time(),
+                        'from_cache': False  # 标记数据来源
+                    }
+
+                    logger.info(f"订单详情获取成功: {order_id}")
+                    if sku_info:
+                        logger.info(f"规格信息 - 名称: {result['spec_name']}, 值: {result['spec_value']}")
+                        logger.info(f"数量: {result['quantity']}, 金额: {result['amount']}")
+                    return result
+                finally:
+                    await self._wait_for_response_capture_tasks(timeout=0.5)
+                    self._clear_response_capture_handler()
 
             except Exception as e:
                 logger.error(f"获取订单详情失败: {e}")
@@ -561,6 +576,623 @@ class OrderDetailFetcher:
         except (ValueError, TypeError):
             return False
 
+    def _parse_amount_value(self, amount_text: Any) -> Optional[float]:
+        normalized = self._normalize_amount_text(str(amount_text) if amount_text is not None else '')
+        if normalized is None:
+            return None
+        try:
+            return float(normalized)
+        except (ValueError, TypeError):
+            return None
+
+    def _reset_amount_capture(self, order_id: str) -> None:
+        self._active_order_id = str(order_id or '').strip()
+        self._captured_amount_candidates = []
+        self._pending_response_tasks = set()
+
+    def _clear_response_capture_handler(self) -> None:
+        if not self._response_handler:
+            return
+
+        try:
+            if self.page and hasattr(self.page, 'remove_listener'):
+                self.page.remove_listener('response', self._response_handler)
+            elif self.page and hasattr(self.page, 'off'):
+                self.page.off('response', self._response_handler)
+        except Exception as e:
+            logger.debug(f"移除订单详情响应监听失败: {e}")
+        finally:
+            self._response_handler = None
+
+    def _register_response_capture_handler(self, order_id: str) -> None:
+        self._clear_response_capture_handler()
+        self._reset_amount_capture(order_id)
+
+        if not self.page:
+            return
+
+        current_order_id = self._active_order_id
+
+        def _on_task_done(task: asyncio.Task) -> None:
+            self._pending_response_tasks.discard(task)
+            try:
+                task.result()
+            except asyncio.CancelledError:
+                pass
+            except Exception as task_error:
+                logger.debug(f"订单详情响应解析任务异常: {task_error}")
+
+        def _response_handler(response) -> None:
+            try:
+                task = asyncio.create_task(self._process_order_detail_response(response, current_order_id))
+            except Exception as e:
+                logger.debug(f"创建订单详情响应解析任务失败: {e}")
+                return
+
+            self._pending_response_tasks.add(task)
+            task.add_done_callback(_on_task_done)
+
+        self._response_handler = _response_handler
+        self.page.on('response', _response_handler)
+
+    async def _wait_for_response_capture_tasks(self, timeout: float = 1.5) -> None:
+        if not self._pending_response_tasks:
+            return
+
+        try:
+            await asyncio.wait(list(self._pending_response_tasks), timeout=timeout)
+        except Exception as e:
+            logger.debug(f"等待订单详情响应解析任务失败: {e}")
+
+    def _try_parse_json_text(self, text: str) -> Optional[Any]:
+        if not text:
+            return None
+
+        stripped = str(text).strip()
+        if not stripped or stripped[0] not in '{[':
+            return None
+
+        try:
+            return json.loads(stripped)
+        except Exception:
+            return None
+
+    def _is_trusted_order_detail_response_url(self, url: str) -> bool:
+        lowered_url = str(url or '').lower()
+        trusted_tokens = (
+            'mtop.idle.web.trade.order.detail',
+            'trade.order.detail',
+        )
+        return any(token in lowered_url for token in trusted_tokens)
+
+    def _normalize_minor_amount_value(self, amount_value: Any) -> Any:
+        text = str(amount_value).strip() if amount_value is not None else ''
+        if not re.fullmatch(r'\d+', text):
+            return amount_value
+
+        try:
+            minor_value = int(text)
+        except (TypeError, ValueError):
+            return amount_value
+
+        if minor_value <= 0:
+            return amount_value
+
+        return f"{minor_value / 100:.2f}"
+
+    def _payload_references_order(self, payload: Any, order_id: str, url: str = '') -> bool:
+        order_id_text = str(order_id or '').strip()
+        url_text = str(url or '')
+        lowered_url = url_text.lower()
+
+        if order_id_text and order_id_text in url_text:
+            return True
+
+        try:
+            payload_text = json.dumps(payload, ensure_ascii=False)
+        except Exception:
+            payload_text = str(payload)
+
+        if order_id_text and order_id_text in payload_text:
+            return True
+
+        return self._is_trusted_order_detail_response_url(lowered_url)
+
+    def _score_amount_key_candidate(self, normalized_key: str, *, context: str = '', path: str = '') -> int:
+        key = str(normalized_key or '').lower()
+        if not key:
+            return 0
+
+        ignored_key_tokens = [
+            'coupon', 'discount', 'freight', 'postage', 'shipping', 'delivery',
+            'deduction', 'coin', 'hongbao', 'voucher', 'reduce', 'cut',
+            'original', 'origin', 'raw', 'list', 'market', 'crossed', 'strike',
+            'buyamount'
+        ]
+        if any(token in key for token in ignored_key_tokens):
+            return 0
+
+        strong_key_tokens = [
+            'actualpay', 'payamount', 'realpay', 'orderamount', 'paymentamount',
+            'paidamount', 'finalamount', 'tradeamount', 'dealprice', 'buyerpayamount',
+            'buyeractualpay', 'sellerrealamount', 'selleractualamount'
+        ]
+        medium_key_tokens = [
+            'currentprice', 'realamount', 'finalprice', 'settleamount', 'settleprice',
+            'payprice', 'buyerpay', 'orderprice'
+        ]
+
+        matched_strong_key = any(token in key for token in strong_key_tokens)
+        matched_medium_key = any(token in key for token in medium_key_tokens)
+
+        score = 0
+        if matched_strong_key:
+            score = 220
+        elif matched_medium_key:
+            score = 170
+        elif key in {'price', 'amount', 'money'} or key.endswith('price') or key.endswith('amount'):
+            score = 80
+        else:
+            return 0
+
+        normalized_context = re.sub(r'\s+', ' ', str(context or '')).strip()
+        path_lower = str(path or '').lower()
+        high_context_tokens = ['实付款', '订单金额', '应付金额', '应付', '实收金额', '实收', '付款金额', '支付金额', '实付']
+        medium_context_tokens = ['改价后', '优惠后', '成交价', '支付价', '最终价', '待发货', '去发货', '小刀']
+        low_context_tokens = ['合计', '总价', '商品总价']
+        negative_context_tokens = ['闲鱼币抵扣', '优惠', '立减', '折扣', '运费', '邮费', '红包', '券']
+
+        if key == 'price' and any(token in path_lower for token in ('.iteminfo.price', '.priceinfo.price', '.paymentinfo.price')):
+            score = max(score, 210)
+
+        if any(token in normalized_context for token in high_context_tokens):
+            score += 180
+        elif any(token in normalized_context for token in medium_context_tokens):
+            score += 120
+        elif any(token in normalized_context for token in low_context_tokens):
+            score += 70
+
+        if 'priceinfo' in path_lower:
+            score += 20
+
+        if any(token in normalized_context for token in negative_context_tokens) and not any(
+            token in normalized_context for token in high_context_tokens + medium_context_tokens
+        ):
+            score -= 110
+
+        trusted_price_path = any(token in path_lower for token in ('.iteminfo.price', '.priceinfo.price', '.paymentinfo.price'))
+
+        if (
+            not matched_strong_key and
+            not matched_medium_key and
+            not trusted_price_path and
+            (key in {'price', 'amount', 'money'} or key.endswith('price') or key.endswith('amount'))
+        ) and not any(token in normalized_context for token in high_context_tokens + medium_context_tokens + low_context_tokens):
+            return 0
+
+        if score < 100 and not normalized_context:
+            return 0
+
+        return max(score, 0)
+
+    def _append_amount_candidate(
+        self,
+        candidates: List[Dict[str, Any]],
+        amount_value: Any,
+        source: str,
+        score: int,
+        *,
+        path: str = '',
+        context: str = ''
+    ) -> None:
+        if score <= 0:
+            return
+
+        normalized_amount = self._normalize_amount_text(str(amount_value) if amount_value is not None else '')
+        parsed_amount = self._parse_amount_value(normalized_amount)
+        if normalized_amount is None or parsed_amount is None or parsed_amount <= 0 or parsed_amount > 100000:
+            return
+
+        candidates.append({
+            'amount': normalized_amount,
+            'source': source,
+            'score': score,
+            'path': path,
+            'context': re.sub(r'\s+', ' ', str(context or '')).strip()[:240],
+        })
+
+    def _extract_amount_candidates_from_payload(
+        self,
+        payload: Any,
+        *,
+        path: str = 'payload',
+        depth: int = 0
+    ) -> List[Dict[str, Any]]:
+        if payload is None or depth > 6:
+            return []
+
+        candidates: List[Dict[str, Any]] = []
+
+        if isinstance(payload, dict):
+            context_fields = []
+            for context_key in ('title', 'desc', 'text', 'label', 'name', 'preText', 'subTitle', 'displayText', 'content'):
+                context_value = payload.get(context_key)
+                if isinstance(context_value, (str, int, float)):
+                    normalized_context_value = re.sub(r'\s+', ' ', str(context_value)).strip()
+                    if normalized_context_value:
+                        context_fields.append(normalized_context_value)
+            dict_context = ' | '.join(context_fields)[:240]
+
+            for key, value in payload.items():
+                key_text = str(key)
+                key_path = f"{path}.{key_text}"
+                normalized_key = re.sub(r'[^0-9A-Za-z\u4e00-\u9fff]', '', key_text).lower()
+
+                if isinstance(value, (dict, list)):
+                    candidates.extend(self._extract_amount_candidates_from_payload(value, path=key_path, depth=depth + 1))
+                    continue
+
+                if isinstance(value, str):
+                    nested_payload = self._try_parse_json_text(value)
+                    if nested_payload is not None:
+                        candidates.extend(
+                            self._extract_amount_candidates_from_payload(
+                                nested_payload,
+                                path=f"{key_path}.json",
+                                depth=depth + 1
+                            )
+                        )
+
+                    semantic_amount, semantic_source = self._extract_preferred_amount_from_text(value)
+                    if semantic_amount:
+                        semantic_score = 0
+                        if semantic_source == 'keyword_high':
+                            semantic_score = 260
+                        elif semantic_source == 'keyword_low':
+                            semantic_score = 180
+                        elif semantic_source == 'currency' and any(token in normalized_key for token in ('price', 'amount', 'money', 'pay', 'text', 'desc', 'label')):
+                            semantic_score = 120
+
+                        self._append_amount_candidate(
+                            candidates,
+                            semantic_amount,
+                            f'payload_text_{semantic_source}',
+                            semantic_score,
+                            path=key_path,
+                            context=value
+                        )
+
+                if isinstance(value, (str, int, float)):
+                    key_score = self._score_amount_key_candidate(normalized_key, context=dict_context, path=key_path)
+                    self._append_amount_candidate(
+                        candidates,
+                        value,
+                        f'payload_key_{normalized_key or "unknown"}',
+                        key_score,
+                        path=key_path,
+                        context=dict_context
+                    )
+
+            return candidates
+
+        if isinstance(payload, list):
+            for index, item in enumerate(payload[:50]):
+                candidates.extend(self._extract_amount_candidates_from_payload(item, path=f"{path}[{index}]", depth=depth + 1))
+
+        return candidates
+
+    async def _process_order_detail_response(self, response, order_id: str) -> None:
+        try:
+            if not response or response.status != 200:
+                return
+
+            url = str(response.url or '')
+            lowered_url = url.lower()
+            if not any(domain in lowered_url for domain in ('goofish.com', 'idlefish.com', 'taobao.com', 'mtop')):
+                return
+
+            if not self._is_trusted_order_detail_response_url(lowered_url):
+                return
+
+            headers = response.headers or {}
+            content_type = (headers.get('content-type') or headers.get('Content-Type') or '').lower()
+            resource_type = getattr(getattr(response, 'request', None), 'resource_type', '')
+            if resource_type not in ('fetch', 'xhr', 'document') and 'json' not in content_type and 'mtop' not in lowered_url:
+                return
+
+            payload = None
+            try:
+                payload = await response.json()
+            except Exception:
+                try:
+                    response_text = await response.text()
+                except Exception:
+                    response_text = ''
+                payload = self._try_parse_json_text(response_text)
+
+            if payload is None or not self._payload_references_order(payload, order_id, url):
+                return
+
+            response_candidates = self._extract_amount_candidates_from_payload(payload, path=f"response[{url.split('?')[0]}]")
+            if not response_candidates:
+                return
+
+            for candidate in response_candidates:
+                candidate_copy = dict(candidate)
+                candidate_copy['source'] = f"structured_response::{candidate['source']}"
+                candidate_copy['response_url'] = url
+                self._captured_amount_candidates.append(candidate_copy)
+
+            best_candidate = max(response_candidates, key=lambda item: item.get('score', 0))
+            logger.info(
+                f"捕获订单金额候选: order_id={order_id}, amount={best_candidate.get('amount')}, "
+                f"score={best_candidate.get('score')}, source={best_candidate.get('source')}, url={url}"
+            )
+        except Exception as e:
+            logger.debug(f"解析订单详情响应失败: {e}")
+
+    def _get_best_captured_amount_candidate(self) -> Optional[Dict[str, Any]]:
+        if not self._captured_amount_candidates:
+            return None
+
+        deduped: Dict[Tuple[str, str, str], Dict[str, Any]] = {}
+        for candidate in self._captured_amount_candidates:
+            dedupe_key = (
+                str(candidate.get('amount', '')),
+                str(candidate.get('source', '')),
+                str(candidate.get('path', '')),
+            )
+            existing = deduped.get(dedupe_key)
+            if existing is None or candidate.get('score', 0) > existing.get('score', 0):
+                deduped[dedupe_key] = candidate
+
+        ranked_candidates = sorted(
+            deduped.values(),
+            key=lambda item: (item.get('score', 0), item.get('amount', '')),
+            reverse=True
+        )
+        return ranked_candidates[0] if ranked_candidates else None
+
+    async def _extract_amount_from_structured_content(self) -> Tuple[Optional[str], str]:
+        await self._wait_for_response_capture_tasks(timeout=1.5)
+
+        best_candidate = self._get_best_captured_amount_candidate()
+        if best_candidate:
+            logger.info(
+                f"采用结构化响应金额候选: amount={best_candidate.get('amount')}, "
+                f"score={best_candidate.get('score')}, source={best_candidate.get('source')}, "
+                f"path={best_candidate.get('path')}"
+            )
+            return best_candidate.get('amount'), best_candidate.get('source', 'unknown')
+
+        try:
+            html_content = await self.page.content()
+        except Exception as e:
+            logger.debug(f"获取页面HTML失败，无法解析结构化金额: {e}")
+            return None, 'unknown'
+
+        if not html_content:
+            return None, 'unknown'
+
+        pattern_specs = [
+            (
+                'structured_html_priceinfo',
+                re.compile(r'"preText"\s*:\s*"[^"]*(实付款|订单金额|应付金额|改价后|优惠后|成交价|支付金额|支付价)[^"]*".{0,240}?"price"\s*:\s*"([0-9]+(?:\.[0-9]{1,2})?)"', re.IGNORECASE | re.DOTALL),
+                2,
+            ),
+            (
+                'structured_html_priceinfo',
+                re.compile(r'"price"\s*:\s*"([0-9]+(?:\.[0-9]{1,2})?)".{0,240}?"preText"\s*:\s*"[^"]*(实付款|订单金额|应付金额|改价后|优惠后|成交价|支付金额|支付价)[^"]*"', re.IGNORECASE | re.DOTALL),
+                1,
+            ),
+            (
+                'structured_html_key',
+                re.compile(r'"(?:actualPay|payAmount|realPay|orderAmount|paymentAmount|finalAmount|buyerPayAmount|dealPrice|paidAmount|tradeAmount)"\s*:\s*"?([0-9]+(?:\.[0-9]{1,2})?)"?', re.IGNORECASE),
+                1,
+            ),
+            (
+                'structured_html_text',
+                re.compile(r'(?:实付款|订单金额|应付金额|改价后|优惠后|成交价|支付金额|支付价)[^0-9¥￥$]{0,20}[¥￥$]?\s*([0-9]+(?:\.[0-9]{1,2})?)', re.IGNORECASE),
+                1,
+            ),
+        ]
+
+        for source, pattern, group_index in pattern_specs:
+            match = pattern.search(html_content)
+            if not match:
+                continue
+
+            normalized_amount = self._normalize_amount_text(match.group(group_index))
+            if normalized_amount is None:
+                continue
+
+            logger.info(f"通过页面结构化内容找到金额: {normalized_amount} (source={source})")
+            return normalized_amount, source
+
+        return None, 'unknown'
+
+    async def _extract_amount_from_semantic_blocks(self) -> Tuple[Optional[str], str]:
+        semantic_keywords = [
+            '实付款', '订单金额', '应付金额', '应付', '实收', '付款金额', '支付金额', '实付',
+            '改价后', '优惠后', '成交价', '支付价', '最终价', '闲鱼币抵扣'
+        ]
+
+        try:
+            text_blocks = await self.page.evaluate(
+                """(keywords) => {
+                    const nodes = Array.from(document.querySelectorAll('div, span, p, section, article, li'));
+                    const results = [];
+                    const seen = new Set();
+                    for (const node of nodes) {
+                        const text = String(node.innerText || node.textContent || '')
+                            .replace(/\\s+/g, ' ')
+                            .trim();
+                        if (!text || text.length < 4 || text.length > 180) {
+                            continue;
+                        }
+                        if (!keywords.some(keyword => text.includes(keyword))) {
+                            continue;
+                        }
+                        if (!/\\d/.test(text)) {
+                            continue;
+                        }
+                        if (seen.has(text)) {
+                            continue;
+                        }
+                        seen.add(text);
+                        results.push(text);
+                        if (results.length >= 24) {
+                            break;
+                        }
+                    }
+                    return results;
+                }""",
+                semantic_keywords,
+            )
+        except Exception as e:
+            logger.debug(f"提取语义金额块失败: {e}")
+            return None, 'unknown'
+
+        high_signal_tokens = {'实付款', '订单金额', '应付金额', '应付', '实收', '付款金额', '支付金额', '实付', '改价后', '优惠后', '成交价', '支付价', '最终价'}
+
+        for block in text_blocks or []:
+            amount, source = self._extract_preferred_amount_from_text(block)
+            if amount is None or source == 'unknown':
+                continue
+
+            if source == 'currency' and not any(token in block for token in high_signal_tokens):
+                continue
+
+            semantic_source = f'semantic_{source}'
+            logger.info(f"通过语义金额块找到金额: {amount} (source={semantic_source}, block={block[:80]})")
+            return amount, semantic_source
+
+        return None, 'unknown'
+
+    def _extract_preferred_amount_from_text(self, text: str) -> Tuple[Optional[str], str]:
+        """从文本中提取更可信的金额，优先识别实付款等语义化字段。"""
+        if not text:
+            return None, 'unknown'
+
+        normalized_text = re.sub(r'\s+', ' ', str(text)).strip()
+        if not normalized_text:
+            return None, 'unknown'
+
+        keyword_groups = [
+            ('keyword_high', ['实付款', '订单金额', '应付金额', '应付', '实收金额', '实收', '付款金额', '支付金额', '实付']),
+            ('keyword_low', ['改价后', '优惠后', '成交价', '支付价', '最终价', '合计', '总价', '商品总价']),
+        ]
+
+        for source, keywords in keyword_groups:
+            for keyword in keywords:
+                escaped_keyword = re.escape(keyword)
+                patterns = [
+                    rf'{escaped_keyword}\s*[:：]?\s*[¥￥$]?\s*([0-9]+(?:\.[0-9]{{1,2}})?)',
+                    rf'([0-9]+(?:\.[0-9]{{1,2}})?)\s*(?:元|块)?\s*{escaped_keyword}',
+                    rf'[¥￥$]\s*([0-9]+(?:\.[0-9]{{1,2}})?)\s*{escaped_keyword}',
+                ]
+                for pattern in patterns:
+                    matches = re.findall(pattern, normalized_text)
+                    if matches:
+                        normalized_amount = self._normalize_amount_text(matches[-1])
+                        if normalized_amount is not None:
+                            return normalized_amount, source
+
+        currency_matches = re.findall(r'[¥￥$]\s*([0-9]+(?:\.[0-9]{1,2})?)', normalized_text)
+        if len(currency_matches) == 1:
+            normalized_amount = self._normalize_amount_text(currency_matches[0])
+            if normalized_amount is not None:
+                return normalized_amount, 'currency'
+
+        return None, 'unknown'
+
+    async def _get_element_amount_context(self, element) -> str:
+        """获取金额元素的局部上下文，用于判断当前数字是否真的是订单金额。"""
+        try:
+            return await element.evaluate(
+                """(el) => {
+                    const texts = [];
+                    let current = el;
+                    for (let i = 0; current && i < 4; i += 1, current = current.parentElement) {
+                        const text = String(current.innerText || current.textContent || '')
+                            .replace(/\\s+/g, ' ')
+                            .trim();
+                        if (!text) {
+                            continue;
+                        }
+                        texts.push(text);
+                        if (text.length >= 24) {
+                            break;
+                        }
+                    }
+                    return texts.join(' | ').slice(0, 240);
+                }"""
+            )
+        except Exception as e:
+            logger.debug(f"获取金额元素上下文失败: {e}")
+            return ''
+
+    async def _extract_amount_from_selectors(self) -> Tuple[Optional[str], str]:
+        amount_selectors = [
+            '.boldNum--JgEOXfA3',
+            '[class*="boldNum"]',
+            '[class*="pay"] [class*="num"]',
+            '[class*="amount"] [class*="num"]',
+            '[class*="price"] [class*="num"]',
+        ]
+
+        for amount_selector in amount_selectors:
+            try:
+                amount_elements = await self.page.query_selector_all(amount_selector)
+            except Exception as selector_e:
+                logger.debug(f"金额选择器 {amount_selector} 解析失败: {selector_e}")
+                continue
+
+            for amount_element in amount_elements:
+                try:
+                    amount_text = await amount_element.text_content()
+                except Exception as text_error:
+                    logger.debug(f"读取金额元素文本失败 {amount_selector}: {text_error}")
+                    continue
+
+                normalized_amount = self._normalize_amount_text(amount_text or '')
+                if normalized_amount is None:
+                    continue
+
+                context_text = await self._get_element_amount_context(amount_element)
+                context_amount, context_source = self._extract_preferred_amount_from_text(context_text)
+                selector_lower = amount_selector.lower()
+                is_generic_selector = (
+                    'price' in selector_lower and
+                    'pay' not in selector_lower and
+                    'amount' not in selector_lower and
+                    'boldnum' not in selector_lower
+                )
+
+                if context_amount and context_amount != normalized_amount:
+                    logger.info(
+                        f"金额候选与上下文主金额不一致，跳过: selector={amount_selector}, "
+                        f"element={normalized_amount}, context={context_amount}, context_source={context_source}"
+                    )
+                    continue
+
+                if is_generic_selector and not context_amount:
+                    logger.info(
+                        f"通用价格选择器缺少可信上下文，跳过金额候选: "
+                        f"selector={amount_selector}, element={normalized_amount}"
+                    )
+                    continue
+
+                if context_amount:
+                    amount_source = f'selector_{context_source}'
+                else:
+                    amount_source = 'selector_direct'
+
+                logger.info(f"通过选择器 {amount_selector} 找到金额: {normalized_amount} (source={amount_source})")
+                return normalized_amount, amount_source
+
+        return None, 'unknown'
+
     def _is_datetime_like(self, text: str) -> bool:
         """判断文本是否明显像时间/日期，而非规格。"""
         if not text:
@@ -666,14 +1298,14 @@ class OrderDetailFetcher:
         }
         return priority_map.get(status or 'unknown', 0)
 
-    def _extract_status_from_text(self, text: str) -> str:
-        """从任意文本中提取订单状态，优先返回更可靠/更后置的状态。"""
+    def _extract_status_matches_from_text(self, text: str, *, source: str = 'generic') -> Dict[str, list]:
+        """从文本中提取状态命中详情，便于按来源做更保守的判定。"""
         if not text:
-            return 'unknown'
+            return {}
 
         normalized_text = re.sub(r'\s+', ' ', str(text)).strip()
         if not normalized_text:
-            return 'unknown'
+            return {}
 
         status_patterns = [
             ('cancelled', ['交易关闭', '已关闭', '钱款已原路退返', '订单关闭']),
@@ -684,13 +1316,66 @@ class OrderDetailFetcher:
             ('pending_payment', ['待付款', '等待买家付款']),
         ]
 
-        matched_statuses = []
-        for status, patterns in status_patterns:
-            if any(pattern in normalized_text for pattern in patterns):
-                matched_statuses.append(status)
+        if source == 'button':
+            status_patterns = [
+                ('cancelled', ['关闭订单', '订单关闭']),
+                ('refunding', ['退款中', '退款详情']),
+                ('completed', ['交易成功', '已完成']),
+                ('shipped', ['提醒收货', '延长收货', '查看物流', '已发货', '确认收货']),
+                ('pending_ship', ['去发货', '立即发货', '待发货']),
+                ('pending_payment', ['修改价格', '等待付款']),
+            ]
 
-        if not matched_statuses:
+        if source == 'body':
+            status_patterns = [
+                ('cancelled', ['交易关闭', '已关闭', '钱款已原路退返', '订单关闭']),
+                ('refunding', ['退款中', '退货退款', '退款关闭']),
+                ('completed', ['买家已确认收货', '买家确认收货，交易成功', '已确认收货，交易成功']),
+                ('shipped', ['等待买家收货', '提醒收货', '延长收货']),
+                ('pending_ship', ['待发货', '等待你发货', '等待卖家发货', '去发货', '付款完成待发货', '记得及时发货']),
+                ('pending_payment', ['待付款', '等待买家付款']),
+            ]
+
+        matched_statuses: Dict[str, list] = {}
+        for status, patterns in status_patterns:
+            matched_patterns = [pattern for pattern in patterns if pattern in normalized_text]
+            if matched_patterns:
+                matched_statuses[status] = matched_patterns
+
+        return matched_statuses
+
+    def _extract_status_from_text(self, text: str, *, source: str = 'generic') -> str:
+        """从任意文本中提取订单状态，优先返回更可靠/更后置的状态。"""
+        matched_status_map = self._extract_status_matches_from_text(text, source=source)
+        if not matched_status_map:
             return 'unknown'
+
+        if source == 'body':
+            if 'completed' in matched_status_map and 'shipped' in matched_status_map:
+                logger.warning(
+                    f"订单状态全文兜底同时命中已发货/已完成信号，优先采用shipped: "
+                    f"completed={matched_status_map.get('completed')}, "
+                    f"shipped={matched_status_map.get('shipped')}"
+                )
+                return 'shipped'
+
+            if 'pending_ship' in matched_status_map and 'shipped' in matched_status_map:
+                logger.warning(
+                    f"订单状态全文兜底出现冲突信号，保守返回unknown: "
+                    f"pending_ship={matched_status_map.get('pending_ship')}, "
+                    f"shipped={matched_status_map.get('shipped')}"
+                )
+                return 'unknown'
+
+            if 'pending_ship' in matched_status_map and 'pending_payment' in matched_status_map:
+                logger.info(
+                    f"订单状态全文兜底检测到待付款/待发货混合信号，优先采用pending_ship: "
+                    f"pending_ship={matched_status_map.get('pending_ship')}, "
+                    f"pending_payment={matched_status_map.get('pending_payment')}"
+                )
+                return 'pending_ship'
+
+        matched_statuses = list(matched_status_map.keys())
 
         matched_statuses.sort(key=self._get_status_priority, reverse=True)
         return matched_statuses[0]
@@ -752,16 +1437,18 @@ class OrderDetailFetcher:
         amount_keywords = ['实付款', '订单金额', '实收', '合计', '总价', '应付']
         for line in lines:
             if any(keyword in line for keyword in amount_keywords):
-                normalized_amount = self._normalize_amount_text(line)
+                normalized_amount, amount_source = self._extract_preferred_amount_from_text(line)
                 if normalized_amount:
                     result['amount'] = normalized_amount
+                    result['amount_source'] = f'text_{amount_source}'
                     break
 
         # 兜底：从全文提取货币数字
         if 'amount' not in result:
-            normalized_amount = self._normalize_amount_text(text)
+            normalized_amount, amount_source = self._extract_preferred_amount_from_text(text)
             if normalized_amount:
                 result['amount'] = normalized_amount
+                result['amount_source'] = f'text_{amount_source}'
 
         # 数量提取
         quantity_patterns = [
@@ -892,6 +1579,7 @@ class OrderDetailFetcher:
             - 'unknown': 未知状态
         """
         try:
+            self._last_order_status_source = 'unknown'
             if not await self._check_browser_status():
                 logger.error("浏览器状态异常，无法获取订单状态")
                 return 'unknown'
@@ -932,19 +1620,21 @@ class OrderDetailFetcher:
             button_texts = await self._collect_texts_by_selectors(button_selectors, max_length=24, max_items=16)
             button_status = 'unknown'
             for button_text in button_texts:
-                candidate_status = self._extract_status_from_text(button_text)
+                candidate_status = self._extract_status_from_text(button_text, source='button')
                 if self._get_status_priority(candidate_status) > self._get_status_priority(button_status):
                     button_status = candidate_status
 
             # 先解析选择器结果
             if status_text:
-                parsed_from_selector = self._extract_status_from_text(status_text)
+                parsed_from_selector = self._extract_status_from_text(status_text, source='selector')
                 if parsed_from_selector == 'unknown':
                     logger.warning(f"未知的订单状态文本: {status_text}")
 
             preferred_status = parsed_from_selector
+            preferred_source = 'selector' if parsed_from_selector != 'unknown' else 'unknown'
             if self._get_status_priority(button_status) > self._get_status_priority(preferred_status):
                 preferred_status = button_status
+                preferred_source = 'button'
 
             logger.info(
                 f"订单状态解析候选: selector={parsed_from_selector} ({status_text or 'empty'}), "
@@ -952,14 +1642,16 @@ class OrderDetailFetcher:
             )
 
             if preferred_status != 'unknown':
-                logger.info(f"订单状态解析最终采用结构化结果: {preferred_status}")
+                self._last_order_status_source = preferred_source
+                logger.info(f"订单状态解析最终采用结构化结果: {preferred_status} (source={preferred_source})")
                 return preferred_status
 
             # 如果选择器/按钮都没有有效结果，尝试从页面文本中提取
             body_text = await self._get_page_text()
-            body_status = self._extract_status_from_text(body_text)
+            body_status = self._extract_status_from_text(body_text, source='body')
             logger.info(f"订单状态解析候选: body={body_status}")
             if body_status != 'unknown':
+                self._last_order_status_source = 'body'
                 logger.info(f"从页面文本中检测到订单状态 -> {body_status}")
                 return body_status
 
@@ -985,27 +1677,15 @@ class OrderDetailFetcher:
             sku_elements = await self.page.query_selector_all(sku_selector)
             logger.info(f"找到 {len(sku_elements)} 个 sku--u_ddZval 元素")
 
-            # 获取金额（多选择器兜底）
-            amount_selectors = [
-                '.boldNum--JgEOXfA3',
-                '[class*="boldNum"]',
-                '[class*="pay"] [class*="num"]',
-                '[class*="amount"] [class*="num"]',
-                '[class*="price"] [class*="num"]',
-            ]
-            for amount_selector in amount_selectors:
-                try:
-                    amount_element = await self.page.query_selector(amount_selector)
-                    if not amount_element:
-                        continue
-                    amount_text = await amount_element.text_content()
-                    normalized_amount = self._normalize_amount_text(amount_text or '')
-                    if normalized_amount:
-                        result['amount'] = normalized_amount
-                        logger.info(f"通过选择器 {amount_selector} 找到金额: {normalized_amount}")
-                        break
-                except Exception as selector_e:
-                    logger.debug(f"金额选择器 {amount_selector} 解析失败: {selector_e}")
+            # 获取金额：优先结构化响应/结构化页面内容，再尝试语义块，最后才走选择器兜底
+            amount, amount_source = await self._extract_amount_from_structured_content()
+            if amount is None:
+                amount, amount_source = await self._extract_amount_from_semantic_blocks()
+            if amount is None:
+                amount, amount_source = await self._extract_amount_from_selectors()
+            if amount is not None:
+                result['amount'] = amount
+                result['amount_source'] = amount_source
 
             # 收集所有元素的内容
             all_contents = []
@@ -1084,7 +1764,7 @@ class OrderDetailFetcher:
                 page_text = await self._get_page_text()
                 fallback_result = self._extract_sku_from_text(page_text)
 
-                for key in ['amount', 'spec_name', 'spec_value', 'spec_name_2', 'spec_value_2', 'quantity']:
+                for key in ['amount', 'amount_source', 'spec_name', 'spec_value', 'spec_name_2', 'spec_value_2', 'quantity']:
                     if key not in result and fallback_result.get(key):
                         result[key] = fallback_result[key]
 
@@ -1166,6 +1846,7 @@ class OrderDetailFetcher:
     async def _force_close_browser(self):
         """强制关闭浏览器，忽略所有错误"""
         try:
+            self._clear_response_capture_handler()
             if self.page:
                 try:
                     await self.page.close()
@@ -1187,18 +1868,23 @@ class OrderDetailFetcher:
                     pass
                 self.browser = None
 
+            self._active_order_id = ''
+
         except Exception as e:
             logger.debug(f"强制关闭浏览器过程中的异常（可忽略）: {e}")
 
     async def close(self):
         """关闭浏览器"""
         try:
+            await self._wait_for_response_capture_tasks(timeout=0.2)
+            self._clear_response_capture_handler()
             if self.page:
                 await self.page.close()
             if self.context:
                 await self.context.close()
             if self.browser:
                 await self.browser.close()
+            self._active_order_id = ''
             logger.info("浏览器已关闭")
         except Exception as e:
             logger.error(f"关闭浏览器失败: {e}")
@@ -1269,19 +1955,22 @@ async def fetch_order_detail_simple(
                             'spec_name': existing_order.get('spec_name', ''),
                             'spec_value': existing_order.get('spec_value', ''),
                             'spec_name_2': existing_order.get('spec_name_2', ''),
-                            'spec_value_2': existing_order.get('spec_value_2', ''),
-                            'quantity': existing_order.get('quantity', ''),
-                            'amount': existing_order.get('amount', '')
-                        },
-                        'spec_name': existing_order.get('spec_name', ''),
-                        'spec_value': existing_order.get('spec_value', ''),
-                        'spec_name_2': existing_order.get('spec_name_2', ''),
                         'spec_value_2': existing_order.get('spec_value_2', ''),
                         'quantity': existing_order.get('quantity', ''),
                         'amount': existing_order.get('amount', ''),
-                        'order_status': existing_order.get('order_status', 'unknown'),  # 添加订单状态
-                        'timestamp': time.time(),
-                        'from_cache': True
+                        'amount_source': 'cache'
+                    },
+                    'spec_name': existing_order.get('spec_name', ''),
+                    'spec_value': existing_order.get('spec_value', ''),
+                    'spec_name_2': existing_order.get('spec_name_2', ''),
+                    'spec_value_2': existing_order.get('spec_value_2', ''),
+                    'quantity': existing_order.get('quantity', ''),
+                    'amount': existing_order.get('amount', ''),
+                    'amount_source': 'cache',
+                    'order_status': existing_order.get('order_status', 'unknown'),  # 添加订单状态
+                    'order_status_source': 'cache',
+                    'timestamp': time.time(),
+                    'from_cache': True
                     }
                     return result
                 else:

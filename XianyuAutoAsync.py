@@ -1113,8 +1113,18 @@ class XianyuLive:
             return {"match_type": "missing", "order": None}
 
         order = recent_orders[0]
+        order_id = str(order.get("order_id") or "").strip()
         order_status = str(order.get("order_status") or "").strip()
-        if order_status in {"shipped", "completed"}:
+        if order_status == "shipped":
+            if self._has_delivery_progress_evidence(order_id):
+                match_type = "already_processed"
+            else:
+                match_type = "suspicious_shipped"
+                logger.warning(
+                    f"{log_prefix} sid兜底命中可疑已发货订单，检测到无真实发货进度，继续允许纠偏: "
+                    f"sid={normalized_sid}, order_id={order_id}, status={order_status}"
+                )
+        elif order_status == "completed":
             match_type = "already_processed"
         elif order_status == "cancelled":
             match_type = "cancelled"
@@ -1136,7 +1146,7 @@ class XianyuLive:
         recent_order = (sid_lookup or {}).get('order')
         match_type = (sid_lookup or {}).get('match_type', 'missing')
 
-        if not recent_order or match_type not in {'not_ready', 'other_status'}:
+        if not recent_order or match_type not in {'not_ready', 'other_status', 'suspicious_shipped'}:
             return sid_lookup
 
         order_id = str(recent_order.get('order_id') or '').strip()
@@ -2069,6 +2079,104 @@ class XianyuLive:
             return merged_status
         return None
 
+    def _normalize_order_amount_text(self, value: Any):
+        text = str(value or '').strip()
+        if not text:
+            return None
+        text = text.replace('¥', '').replace('￥', '').replace(',', '')
+        match = re.search(r'\d+(?:\.\d{1,2})?', text)
+        if not match:
+            return None
+        try:
+            return f"{float(match.group(0)):.2f}"
+        except (TypeError, ValueError):
+            return None
+
+    def _parse_order_amount_float(self, value: Any):
+        normalized = self._normalize_order_amount_text(value)
+        if normalized is None:
+            return None
+        try:
+            return float(normalized)
+        except (TypeError, ValueError):
+            return None
+
+    def _mark_order_bargain_flow(self, order_id: str, item_id: str = None, buyer_id: str = None,
+                                 sid: str = None, *, apply_configured_price: bool = False,
+                                 context: str = '') -> bool:
+        if not order_id:
+            return False
+
+        from db_manager import db_manager
+
+        existing_order = db_manager.get_order_by_id(order_id) or {}
+        effective_item_id = item_id or existing_order.get('item_id')
+        effective_buyer_id = buyer_id or existing_order.get('buyer_id')
+        effective_sid = sid or existing_order.get('sid')
+        amount_to_save = None
+
+        if apply_configured_price and effective_item_id:
+            item_config = db_manager.get_item_info(self.cookie_id, effective_item_id)
+            configured_amount = self._normalize_order_amount_text(item_config.get('item_price') if item_config else None)
+            configured_amount_value = self._parse_order_amount_float(configured_amount)
+            existing_amount_value = self._parse_order_amount_float(existing_order.get('amount'))
+            if configured_amount_value is not None and (
+                existing_amount_value is None or configured_amount_value < existing_amount_value - 0.009
+            ):
+                amount_to_save = configured_amount
+
+        success = db_manager.insert_or_update_order(
+            order_id=order_id,
+            item_id=effective_item_id,
+            buyer_id=effective_buyer_id,
+            sid=effective_sid,
+            amount=amount_to_save,
+            cookie_id=self.cookie_id,
+            bargain_flow_detected=True,
+        )
+
+        if success:
+            logger.info(
+                f"【{self.cookie_id}】标记订单为小刀流程: order_id={order_id}, context={context or 'unknown'}, "
+                f"apply_configured_price={apply_configured_price}, amount_override={amount_to_save or ''}"
+            )
+        else:
+            logger.warning(
+                f"【{self.cookie_id}】标记订单小刀流程失败: order_id={order_id}, context={context or 'unknown'}"
+            )
+        return success
+
+    def _apply_bargain_amount_override(self, order_id: str, item_id: str, amount: Any, amount_source: str,
+                                       existing_order: dict = None, item_config: dict = None):
+        existing_order = existing_order or {}
+        if not existing_order.get('bargain_flow_detected'):
+            return amount, amount_source
+
+        configured_amount = self._normalize_order_amount_text(item_config.get('item_price') if item_config else None)
+        configured_amount_value = self._parse_order_amount_float(configured_amount)
+        if configured_amount_value is None:
+            return amount, amount_source
+
+        incoming_amount = self._normalize_order_amount_text(amount)
+        incoming_amount_value = self._parse_order_amount_float(incoming_amount)
+
+        if incoming_amount_value is None:
+            logger.warning(
+                f"【{self.cookie_id}】小刀订单缺少可信金额，回退为商品配置价: "
+                f"order_id={order_id}, item_id={item_id}, configured_amount={configured_amount}"
+            )
+            return configured_amount, 'bargain_item_price_locked'
+
+        if incoming_amount_value > configured_amount_value + 0.009:
+            logger.warning(
+                f"【{self.cookie_id}】检测到小刀订单仍返回原价，使用商品配置价覆盖: "
+                f"order_id={order_id}, item_id={item_id}, incoming_amount={incoming_amount}, "
+                f"configured_amount={configured_amount}, amount_source={amount_source}"
+            )
+            return configured_amount, 'bargain_item_price_locked'
+
+        return incoming_amount, amount_source
+
     def _resolve_delivery_progress_order_status(self, current_status: str, aggregate_status: str):
         from db_manager import db_manager
 
@@ -2287,6 +2395,25 @@ class XianyuLive:
         }
         return priority_map.get(normalized_status or 'unknown', 0)
 
+    def _has_delivery_progress_evidence(self, order_id: str) -> bool:
+        normalized_order_id = str(order_id or '').strip()
+        if not normalized_order_id:
+            return False
+
+        try:
+            summary = self._summarize_delivery_progress(normalized_order_id, expected_quantity=1) or {}
+        except Exception as summary_error:
+            logger.warning(
+                f"【{self.cookie_id}】读取订单发货进度失败，按已有发货证据处理: "
+                f"order_id={normalized_order_id}, error={self._safe_str(summary_error)}"
+            )
+            return True
+
+        state_count = int(summary.get('state_count') or 0)
+        finalized_count = int(summary.get('finalized_count') or 0)
+        pending_finalize_count = int(summary.get('pending_finalize_count') or 0)
+        return state_count > 0 or finalized_count > 0 or pending_finalize_count > 0
+
     def _reserve_order_detail_force_refresh(self, order_id: str, *, reason: str,
                                             log_prefix: str = "", cooldown_seconds: float = None) -> bool:
         normalized_order_id = str(order_id or '').strip()
@@ -2313,7 +2440,8 @@ class XianyuLive:
         }
         return True
 
-    def _should_force_refresh_after_status_signal(self, status_signal: str, current_status: str) -> bool:
+    def _should_force_refresh_after_status_signal(self, status_signal: str, current_status: str,
+                                                  order_id: str = None) -> bool:
         normalized_signal = db_manager._normalize_order_status(status_signal)
         normalized_current = db_manager._normalize_order_status(current_status)
 
@@ -2321,6 +2449,12 @@ class XianyuLive:
             return False
 
         if normalized_signal == 'pending_ship':
+            if normalized_current == 'shipped' and not self._has_delivery_progress_evidence(order_id):
+                logger.warning(
+                    f"【{self.cookie_id}】检测到可疑已发货状态，允许待发货信号继续强刷详情: "
+                    f"order_id={order_id or 'unknown'}, current_status={normalized_current}, signal={normalized_signal}"
+                )
+                return True
             return normalized_current in {None, '', 'unknown', 'processing', 'pending_payment'}
 
         if normalized_signal == 'shipped':
@@ -2330,6 +2464,37 @@ class XianyuLive:
             if not normalized_current or normalized_current == 'unknown':
                 return True
             return self._get_order_status_priority(normalized_signal) > self._get_order_status_priority(normalized_current)
+
+        return False
+
+    def _should_accept_order_detail_status_correction(self, current_status: str, incoming_status: str,
+                                                      incoming_source: str, *, force_refresh: bool,
+                                                      order_id: str = None) -> bool:
+        normalized_current = db_manager._normalize_order_status(current_status)
+        normalized_incoming = db_manager._normalize_order_status(incoming_status)
+        normalized_source = str(incoming_source or 'unknown').strip().lower()
+
+        if not force_refresh:
+            return False
+        if normalized_current != 'shipped' or normalized_incoming != 'pending_ship':
+            return False
+        if normalized_source not in {'selector', 'button'}:
+            return False
+        if self._has_delivery_progress_evidence(order_id):
+            return False
+        return True
+
+    def _should_reject_order_detail_status_update(self, current_status: str, incoming_status: str,
+                                                  incoming_source: str, *, force_refresh: bool) -> bool:
+        normalized_current = db_manager._normalize_order_status(current_status)
+        normalized_incoming = db_manager._normalize_order_status(incoming_status)
+        normalized_source = str(incoming_source or 'unknown').strip().lower()
+
+        if normalized_incoming != 'completed' or normalized_source != 'body':
+            return False
+
+        if force_refresh and normalized_current in {'shipped', 'pending_ship', 'partial_success', 'partial_pending_finalize'}:
+            return True
 
         return False
 
@@ -2345,7 +2510,7 @@ class XianyuLive:
 
         current_order = db_manager.get_order_by_id(normalized_order_id) or {}
         current_status = current_order.get('order_status')
-        if not self._should_force_refresh_after_status_signal(status_signal, current_status):
+        if not self._should_force_refresh_after_status_signal(status_signal, current_status, normalized_order_id):
             logger.info(
                 f"{log_prefix} 当前订单状态无需为该信号强刷详情: order_id={normalized_order_id}, "
                 f"signal={status_signal or 'unknown'}, current_status={current_status or 'unknown'}"
@@ -2364,7 +2529,7 @@ class XianyuLive:
 
         latest_order = db_manager.get_order_by_id(normalized_order_id) or {}
         latest_status = latest_order.get('order_status')
-        if not self._should_force_refresh_after_status_signal(status_signal, latest_status):
+        if not self._should_force_refresh_after_status_signal(status_signal, latest_status, normalized_order_id):
             logger.info(
                 f"{log_prefix} 延迟后订单状态已更新，无需再强刷详情: order_id={normalized_order_id}, "
                 f"signal={status_signal or 'unknown'}, current_status={latest_status or 'unknown'}"
@@ -7106,6 +7271,15 @@ Cookie数量: {cookie_count}
                             return None
                         return text
 
+                    def _parse_amount_float(value):
+                        text = _normalize_amount_text(value)
+                        if not text:
+                            return None
+                        try:
+                            return float(text)
+                        except (TypeError, ValueError):
+                            return None
+
                     # 获取解析后的规格信息
                     spec_name = _normalize_optional_text(result.get('spec_name'))
                     spec_value = _normalize_optional_text(result.get('spec_value'))
@@ -7113,12 +7287,30 @@ Cookie数量: {cookie_count}
                     spec_value_2 = _normalize_optional_text(result.get('spec_value_2'))
                     quantity = _normalize_optional_text(result.get('quantity'))
                     amount = _normalize_amount_text(result.get('amount'))
+                    amount_source = _normalize_optional_text(result.get('amount_source')) or 'unknown'
+                    item_config = db_manager.get_item_info(self.cookie_id, item_id) if item_id else None
+                    item_config_multi_spec = bool(item_config and item_config.get('is_multi_spec'))
+
+                    if item_config is not None and not item_config_multi_spec and any(
+                        [spec_name, spec_value, spec_name_2, spec_value_2]
+                    ):
+                        logger.warning(
+                            f"【{self.cookie_id}】商品配置为无规格，刷新订单详情时忽略解析到的规格信息: "
+                            f"order_id={order_id}, item_id={item_id}, "
+                            f"spec={spec_name or ''}:{spec_value or ''}, spec2={spec_name_2 or ''}:{spec_value_2 or ''}"
+                        )
+                        spec_name = None
+                        spec_value = None
+                        spec_name_2 = None
+                        spec_value_2 = None
+
                     # 获取订单状态（从闲鱼页面解析）
                     raw_order_status = _normalize_optional_text(result.get('order_status'))
+                    order_status_source = _normalize_optional_text(result.get('order_status_source')) or 'unknown'
                     # unknown 视为解析失败，不覆盖已有状态
                     order_status = raw_order_status if raw_order_status and raw_order_status.lower() != 'unknown' else None
                     if order_status:
-                        logger.info(f"【{self.cookie_id}】📊 订单状态: {order_status}")
+                        logger.info(f"【{self.cookie_id}】📊 订单状态: {order_status} (source={order_status_source})")
                     elif raw_order_status and raw_order_status.lower() == 'unknown':
                         logger.warning(f"【{self.cookie_id}】订单状态解析为unknown，跳过状态字段写库")
 
@@ -7135,11 +7327,76 @@ Cookie数量: {cookie_count}
                         logger.warning(f"【{self.cookie_id}】未获取到有效的规格信息")
                         print(f"⚠️ 【{self.cookie_id}】订单 {order_id} 规格信息获取失败")
 
+                    if amount:
+                        logger.info(f"【{self.cookie_id}】💰 订单金额: {amount} (source={amount_source})")
+
                     # 插入或更新订单信息到数据库
                     try:
                         # 对于系统消息误识别出的“自己是买家”场景，保留已有买家信息并继续刷新订单字段
                         existing_order = db_manager.get_order_by_id(order_id)
                         current_order_status = existing_order.get('order_status') if existing_order else None
+                        existing_amount = existing_order.get('amount') if existing_order else None
+                        existing_amount_value = _parse_amount_float(existing_amount)
+                        amount, amount_source = self._apply_bargain_amount_override(
+                            order_id,
+                            item_id,
+                            amount,
+                            amount_source,
+                            existing_order=existing_order,
+                            item_config=item_config,
+                        )
+                        incoming_amount_value = _parse_amount_float(amount)
+                        has_valid_spec = bool(spec_name and spec_value)
+                        low_confidence_amount_sources = {
+                            'selector_direct',
+                            'selector_currency',
+                            'text_currency',
+                            'unknown',
+                        }
+
+                        if amount and amount_source in low_confidence_amount_sources and not has_valid_spec and not order_status:
+                            if existing_amount_value is not None:
+                                logger.warning(
+                                    f"【{self.cookie_id}】订单详情返回低置信度金额，保留已有金额: "
+                                    f"order_id={order_id}, existing_amount={existing_amount}, incoming_amount={amount}, "
+                                    f"amount_source={amount_source}"
+                                )
+                                amount = _normalize_amount_text(existing_amount)
+                                amount_source = 'preserved_existing'
+                            else:
+                                logger.warning(
+                                    f"【{self.cookie_id}】订单详情返回低置信度金额，且缺少规格/状态佐证，跳过写库: "
+                                    f"order_id={order_id}, incoming_amount={amount}, amount_source={amount_source}"
+                                )
+                                amount = None
+
+                        elif (
+                            amount and existing_amount_value is not None and incoming_amount_value is not None and
+                            abs(existing_amount_value - incoming_amount_value) > 0.009 and
+                            not has_valid_spec and not order_status and
+                            amount_source not in {'selector_keyword_high', 'selector_keyword_low', 'text_keyword_high', 'text_keyword_low', 'cache'}
+                        ):
+                            logger.warning(
+                                f"【{self.cookie_id}】订单详情金额跳变且缺少规格/状态佐证，保留已有金额: "
+                                f"order_id={order_id}, existing_amount={existing_amount}, incoming_amount={amount}, "
+                                f"amount_source={amount_source}"
+                            )
+                            amount = _normalize_amount_text(existing_amount)
+                            amount_source = 'preserved_existing'
+
+                        if self._should_reject_order_detail_status_update(
+                            current_status=current_order_status,
+                            incoming_status=order_status,
+                            incoming_source=order_status_source,
+                            force_refresh=force_refresh,
+                        ):
+                            logger.warning(
+                                f"【{self.cookie_id}】强制刷新结果仅来自正文，拒绝将订单状态更新为completed: "
+                                f"order_id={order_id}, current={current_order_status}, incoming={order_status}, "
+                                f"source={order_status_source}"
+                            )
+                            order_status = None
+
                         normalized_current_order_status = db_manager._normalize_order_status(current_order_status)
                         normalized_incoming_order_status = db_manager._normalize_order_status(order_status)
                         buyer_id_to_save = buyer_id
@@ -7148,11 +7405,25 @@ Cookie数量: {cookie_count}
                             source="order_detail",
                             log_prefix=f"【{self.cookie_id}】"
                         )
-                        order_status_to_save = self._resolve_external_order_status(
+                        if self._should_accept_order_detail_status_correction(
                             current_order_status,
                             order_status,
-                            source='order_detail_refresh'
-                        )
+                            order_status_source,
+                            force_refresh=force_refresh,
+                            order_id=order_id,
+                        ):
+                            order_status_to_save = normalized_incoming_order_status
+                            logger.warning(
+                                f"【{self.cookie_id}】检测到可疑已发货状态，允许强刷后的结构化待发货结果纠偏: "
+                                f"order_id={order_id}, current={current_order_status}, incoming={order_status}, "
+                                f"source={order_status_source}"
+                            )
+                        else:
+                            order_status_to_save = self._resolve_external_order_status(
+                                current_order_status,
+                                order_status,
+                                source='order_detail_refresh'
+                            )
 
                         if (
                             order_status and existing_order and order_status_to_save is None and
@@ -11114,6 +11385,13 @@ Cookie数量: {cookie_count}
             is_group_message = bool(message_route_info.get('is_group_message'))
             message_direction = message_route_info.get('message_direction', 0)
             content_type = message_route_info.get('content_type', 0)
+            card_title = str(message_route_info.get('card_title') or '').strip()
+            special_flow_card_titles = {
+                '我已小刀，待刀成',
+                '我已小刀,待刀成',
+                '我已成功小刀，待发货',
+                '我已成功小刀,待发货',
+            }
 
             logger.info(
                 f"【{self.cookie_id}】[{msg_id}] 消息分类: route={message_route}, "
@@ -11462,13 +11740,13 @@ Cookie数量: {cookie_count}
                 logger.info(f"【{self.cookie_id}】[{msg_id}] ⏹️ 处理结束（自动发货完成）")
                 return
             # 【重要】检查小刀流程卡片消息 - 即使在人工接入暂停期间也要处理
-            elif send_message == '[卡片消息]':
+            elif send_message == '[卡片消息]' or card_title in special_flow_card_titles:
                 # 检查是否为小刀相关卡片消息
                 try:
                     # 从消息中提取卡片内容
-                    card_title = None
+                    card_title = card_title or None
                     card_message_1 = message.get("1", {}) if isinstance(message, dict) else {}
-                    if isinstance(card_message_1, dict):
+                    if not card_title and isinstance(card_message_1, dict):
                         if "6" in card_message_1 and isinstance(card_message_1["6"], dict):
                             message_6 = card_message_1["6"]
                             if "3" in message_6 and isinstance(message_6["3"], dict):
@@ -11547,12 +11825,26 @@ Cookie数量: {cookie_count}
                             logger.warning(f'[{msg_time}] 【{self.cookie_id}】❌ 未能提取到订单ID，无法执行免拼发货')
                             return
 
+                        self._mark_order_bargain_flow(
+                            order_id,
+                            item_id=item_id,
+                            buyer_id=send_user_id,
+                            context=card_title or 'waiting_bargain',
+                        )
+
                         # 延迟2秒后执行免拼发货
                         logger.info(f'[{msg_time}] 【{self.cookie_id}】延迟2秒后执行免拼发货...')
                         await asyncio.sleep(2)
                         # 调用自动免拼发货方法
                         result = await self.auto_freeshipping(order_id, item_id, send_user_id)
                         if result.get('success'):
+                            self._mark_order_bargain_flow(
+                                order_id,
+                                item_id=item_id,
+                                buyer_id=send_user_id,
+                                apply_configured_price=True,
+                                context=f'{card_title or "waiting_bargain"}_success',
+                            )
                             logger.info(f'[{msg_time}] 【{self.cookie_id}】✅ 自动免拼发货成功')
                             logger.info(f'[{msg_time}] 【{self.cookie_id}】⏳ 已完成免拼，等待"我已成功小刀，待发货"卡片后再自动发货')
                             return
@@ -11564,6 +11856,16 @@ Cookie数量: {cookie_count}
                     # 第二阶段：成功小刀待发货，触发自动发货
                     elif card_title in ready_to_ship_titles:
                         logger.info(f'[{msg_time}] 【{self.cookie_id}】【系统】检测到"{card_title}"，开始自动发货')
+
+                        order_id = self._extract_order_id(message, message_data)
+                        if order_id:
+                            self._mark_order_bargain_flow(
+                                order_id,
+                                item_id=item_id,
+                                buyer_id=send_user_id,
+                                apply_configured_price=True,
+                                context=card_title,
+                            )
 
                         # 检查是否启用自动确认发货
                         if not self.is_auto_confirm_enabled():
