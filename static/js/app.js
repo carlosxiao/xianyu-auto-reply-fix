@@ -15237,7 +15237,7 @@ function exportSearchResults() {
 
 
 // 默认版本号（当无法读取 version.txt 时使用）
-const DEFAULT_VERSION = 'v1.7.3';
+const DEFAULT_VERSION = 'v1.7.4';
 
 // 当前本地版本号（动态从 version.txt 读取）
 let LOCAL_VERSION = DEFAULT_VERSION;
@@ -15351,9 +15351,19 @@ function clearIgnoredUpdateVersion(showFeedback = true) {
 
 // 本地版本历史（远程服务禁用时使用）
 const LOCAL_VERSION_HISTORY = {
-    version: 'v1.7.3',
+    version: 'v1.7.4',
     intro: '本系统仅供个人学习研究使用，请勿用于商业用途。如有问题或建议，欢迎反馈。',
     versionHistory: [
+        {
+            version: 'v1.7.4',
+            date: '2026-03-22',
+            updates: [
+                '【修复】收紧订单号提取规则，避免普通消息中的 messageId 被误识别为订单号并生成处理中假订单',
+                '【修复】统一销售统计口径并跳过空金额/脏金额订单，修复销售额卡片获取失败的问题',
+                '【优化】重构仪表盘账号概览、订单数据看板、销售趋势与发货日志展示，关键信息更清晰易读',
+                '【优化】发货日志拆分规则、匹配结果、触发方式和规格状态列，并简化规格状态显示便于快速排查'
+            ]
+        },
         {
             version: 'v1.7.3',
             date: '2026-03-21',
