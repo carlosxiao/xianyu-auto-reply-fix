@@ -391,7 +391,7 @@ class XianyuLive:
         if any(keyword in message for keyword in ["滑块验证失败", "未找到滑块容器"]):
             return "slider_failed", 600
         if any(keyword in message for keyword in ["页面会话已失效", "target page, context or browser has been closed"]):
-            return "page_session_lost", 300
+            return "unknown", 180
         if any(keyword in message for keyword in ["网络", "timeout", "cannot connect", "连接", "dns", "ssl"]):
             return "network", 180
         return "unknown", 300
@@ -1138,6 +1138,11 @@ class XianyuLive:
         # 滑块验证相关
         self.captcha_verification_count = 0  # 滑块验证次数计数器
         self.max_captcha_verification_count = 3  # 最大滑块验证次数，防止无限递归
+        self.last_slider_success_at = 0.0
+        self.last_slider_success_cookie_length = 0
+        self.slider_success_reentry_window = 30
+        self.post_slider_token_retry_delay = (1.5, 3.0)
+        self.token_refresh_lock = asyncio.Lock()  # 防止多个入口并发刷新 token
 
         # WebSocket连接监控
         self.connection_state = ConnectionState.DISCONNECTED  # 连接状态
@@ -4333,7 +4338,50 @@ class XianyuLive:
 
 
 
+    def _reload_latest_cookies_from_db(self, reason: str = "") -> bool:
+        """从数据库重载当前账号最新 Cookie。"""
+        try:
+            from db_manager import db_manager
+
+            account_info = db_manager.get_cookie_details(self.cookie_id)
+            new_cookies_str = self._extract_cookie_value(account_info)
+            if new_cookies_str and new_cookies_str != self.cookies_str:
+                suffix = f" ({reason})" if reason else ""
+                logger.info(f"【{self.cookie_id}】检测到数据库中的cookie已更新，重新加载cookie{suffix}")
+                self.cookies_str = new_cookies_str
+                self.cookies = trans_cookies(self.cookies_str)
+                logger.warning(f"【{self.cookie_id}】Cookie已从数据库重新加载")
+                return True
+        except Exception as reload_e:
+            logger.warning(f"【{self.cookie_id}】从数据库重新加载cookie失败，继续使用当前cookie: {self._safe_str(reload_e)}")
+        return False
+
+    def _mark_slider_success_recovery(self, cookies_str: str = ""):
+        self.last_slider_success_at = time.time()
+        self.last_slider_success_cookie_length = len(cookies_str or "")
+
+    def _has_recent_slider_success(self, window_seconds: int = None) -> bool:
+        if not self.last_slider_success_at:
+            return False
+        window = window_seconds or self.slider_success_reentry_window
+        return (time.time() - self.last_slider_success_at) <= window
+
     async def refresh_token(self, captcha_retry_count: int = 0):
+        if self.token_refresh_lock.locked():
+            logger.info(f"【{self.cookie_id}】Token刷新已有执行中任务，等待当前流程完成后复用结果")
+
+        async with self.token_refresh_lock:
+            if (
+                captcha_retry_count == 0 and
+                self.current_token and
+                self.last_token_refresh_status == "success" and
+                (time.time() - self.last_token_refresh_time) < 15
+            ):
+                logger.info(f"【{self.cookie_id}】最近15秒内已有成功的Token刷新结果，直接复用当前Token")
+                return self.current_token
+            return await self._refresh_token_impl(captcha_retry_count)
+
+    async def _refresh_token_impl(self, captcha_retry_count: int = 0, post_slider_session_grace_used: bool = False):
         """刷新token
 
         Args:
@@ -4374,20 +4422,7 @@ class XianyuLive:
             # 【重要】在刷新token前，先从数据库重新加载最新的cookie
             # 这样即使用户已经手动更新了cookie，代码也会使用最新的cookie
             logger.info(f"【{self.cookie_id}】开始执行Cookie刷新任务...")
-            # await self._execute_cookie_refresh(time.time())
-            try:
-                from db_manager import db_manager
-                account_info = db_manager.get_cookie_details(self.cookie_id)
-                new_cookies_str = self._extract_cookie_value(account_info)
-                if new_cookies_str:
-                    if new_cookies_str != self.cookies_str:
-                        logger.info(f"【{self.cookie_id}】检测到数据库中的cookie已更新，重新加载cookie")
-                        self.cookies_str = new_cookies_str
-                        # 更新cookies字典
-                        self.cookies = trans_cookies(self.cookies_str)
-                        logger.warning(f"【{self.cookie_id}】Cookie已从数据库重新加载")
-            except Exception as reload_e:
-                logger.warning(f"【{self.cookie_id}】从数据库重新加载cookie失败，继续使用当前cookie: {self._safe_str(reload_e)}")
+            self._reload_latest_cookies_from_db("token刷新前")
 
             # 生成更精确的时间戳
             timestamp = str(int(time.time() * 1000))
@@ -4527,7 +4562,10 @@ class XianyuLive:
                                     browser_stabilized_at=time.time()
                                 )
                                 logger.info(f"【{self.cookie_id}】浏览器侧Cookie稳定化完成，重新尝试Token刷新")
-                                return await self.refresh_token(captcha_retry_count)
+                                return await self._refresh_token_impl(
+                                    captcha_retry_count,
+                                    post_slider_session_grace_used=post_slider_session_grace_used,
+                                )
                             logger.warning(f"【{self.cookie_id}】浏览器侧Cookie稳定化未消除风控，继续进入滑块验证")
 
                         if self.is_manual_refresh_active(self.cookie_id):
@@ -4602,9 +4640,26 @@ class XianyuLive:
 
                                 # 重启实例（cookies已在_handle_captcha_verification中更新到数据库）
                                 # await self._restart_instance()
-                                
+
+                                # 给浏览器回写票据与数据库落盘留一个稳定窗口，避免刚过块就立即重新命中Session过期
+                                settle_delay = random.uniform(*self.post_slider_token_retry_delay)
+                                logger.info(
+                                    f"【{self.cookie_id}】滑块成功后进入稳定窗口 {settle_delay:.2f}s，再重新尝试Token刷新"
+                                )
+                                await asyncio.sleep(settle_delay)
+                                self._reload_latest_cookies_from_db("滑块成功后的稳定窗口")
+                                log_captcha_event(
+                                    self.cookie_id,
+                                    "滑块成功后重新进入Token刷新",
+                                    None,
+                                    f"类型: token_reentry_after_slider_success, captcha_retry_count={captcha_retry_count + 1}"
+                                )
+
                                 # 重新尝试刷新token（递归调用，但有深度限制）
-                                return await self.refresh_token(captcha_retry_count + 1)
+                                return await self._refresh_token_impl(
+                                    captcha_retry_count + 1,
+                                    post_slider_session_grace_used=False,
+                                )
                             else:
                                 logger.error(f"【{self.cookie_id}】滑块验证失败")
 
@@ -4664,6 +4719,7 @@ class XianyuLive:
                             token_trigger_scene = 'token_refresh'
                             expire_type = '令牌过期' if '令牌过期' in res_json_str else 'Session过期'
                             try:
+                                from db_manager import db_manager
                                 stale_count = db_manager.mark_stale_risk_control_logs_failed(timeout_minutes=15, cookie_id=self.cookie_id)
                                 if stale_count > 0:
                                     logger.warning(f"【{self.cookie_id}】检测到{stale_count}条超时processing风控日志，已自动标记failed")
@@ -4702,6 +4758,25 @@ class XianyuLive:
                                 notification_sent = True
                                 return None
 
+                            if self._has_recent_slider_success() and not post_slider_session_grace_used:
+                                grace_delay = random.uniform(1.2, 2.2)
+                                logger.warning(
+                                    f"【{self.cookie_id}】检测到最近 {self.slider_success_reentry_window}s 内刚通过滑块，"
+                                    f"先等待 {grace_delay:.2f}s 并重载Cookie后再试一次Token刷新"
+                                )
+                                log_captcha_event(
+                                    self.cookie_id,
+                                    "滑块成功后Session过期，优先重试Token刷新",
+                                    None,
+                                    f"类型: token_retry_after_recent_slider_success, expire_type={expire_type}"
+                                )
+                                await asyncio.sleep(grace_delay)
+                                self._reload_latest_cookies_from_db("滑块成功后的Session过期缓冲")
+                                return await self._refresh_token_impl(
+                                    captcha_retry_count,
+                                    post_slider_session_grace_used=True,
+                                )
+
                             refresh_success = await self._try_password_login_refresh(
                                 "令牌/Session过期",
                                 risk_session_id=token_expired_session_id,
@@ -4731,7 +4806,10 @@ class XianyuLive:
                                 return None
                             else:
                                 # 刷新成功后，重新尝试获取token
-                                return await self.refresh_token(captcha_retry_count)
+                                return await self._refresh_token_impl(
+                                    captcha_retry_count,
+                                    post_slider_session_grace_used=False,
+                                )
                                 
                                 # 刷新失败时继续执行原有的失败处理逻辑
 
@@ -4930,6 +5008,7 @@ class XianyuLive:
                         # 更新数据库中的cookies
                         await self.update_config_cookies()
                         logger.info(f"【{self.cookie_id}】滑块验证成功后，数据库cookies已自动更新")
+                        self._mark_slider_success_recovery(cookies_str)
 
                             
                         # 记录成功更新到日志文件，包含x5相关的cookie信息
@@ -5527,7 +5606,7 @@ class XianyuLive:
             'image_api': None,
             'details': [],
             'inconclusive': False,
-            'relogin_recommended': True
+            'relogin_recommended': True,
         }
         
         # 1. 测试确认发货API - 使用测试订单ID实际调用
@@ -5641,7 +5720,6 @@ class XianyuLive:
                 if redirected_to_login or response.status in (401, 403):
                     logger.warning(f"【{self.cookie_id}】❌ 网页登录态验证失败: 已进入登录/验证页 ({final_url})")
                     result['web_session_api'] = False
-                    result['valid'] = False
                     result['details'].append("网页登录态: 已重定向到登录/验证页")
                 elif response.status >= 500:
                     logger.warning(f"【{self.cookie_id}】⚠️ 网页登录态验证遇到服务端异常: HTTP {response.status}")
@@ -5706,8 +5784,25 @@ class XianyuLive:
                 await uploader.create_session()
                 
                 try:
-                    # 实际上传测试图片
-                    upload_result = await uploader.upload_image(test_image_path)
+                    upload_result = None
+                    error_type = None
+                    error_message = None
+
+                    for attempt in range(2):
+                        upload_result = await uploader.upload_image(test_image_path)
+                        if upload_result:
+                            break
+
+                        error_type = getattr(uploader, 'last_error_type', None)
+                        error_message = getattr(uploader, 'last_error_message', None) or "未知原因"
+                        is_retryable_auth = error_type == 'auth' and error_message == '返回登录页面'
+                        if attempt == 0 and is_retryable_auth:
+                            logger.warning(
+                                f"【{self.cookie_id}】图片上传校验首次返回登录页，但网页登录态仍可访问，1.5秒后重试一次"
+                            )
+                            await asyncio.sleep(1.5)
+                            continue
+                        break
                 finally:
                     # 确保关闭session
                     await uploader.close_session()
@@ -5735,11 +5830,19 @@ class XianyuLive:
                         if result['valid']:
                             result['relogin_recommended'] = False
                         result['details'].append(f"图片上传API: 服务端异常，结果不确定 (HTTP {uploader.last_http_status})")
+                    elif error_type == 'auth' and error_message == '返回登录页面' and result['web_session_api'] is True:
+                        logger.warning(
+                            f"【{self.cookie_id}】⚠️ 图片上传接口返回登录页，但IM网页登录态正常，按旧版保守策略暂不判定Cookie失效"
+                        )
+                        result['image_api'] = None
+                        result['inconclusive'] = True
+                        if result['valid']:
+                            result['relogin_recommended'] = False
+                        result['details'].append("图片上传API: 返回登录页面，但网页登录态正常，结果不确定")
                     else:
                         # 明确认证/会话异常才视为Cookie失效
                         logger.warning(f"【{self.cookie_id}】❌ 图片上传API验证失败: {error_message}")
                         result['image_api'] = False
-                        result['valid'] = False
                         result['details'].append(f"图片上传API: {error_message[:50]}")
                 
             finally:
@@ -5761,10 +5864,20 @@ class XianyuLive:
                 result['relogin_recommended'] = False
             result['details'].append(f"图片上传API: 验证异常，结果不确定 - {error_str[:50]}")
         
+        if result['image_api'] is False:
+            result['valid'] = False
+        elif result['web_session_api'] is False and result['image_api'] is not True:
+            result['valid'] = False
+        elif result['web_session_api'] is False and result['image_api'] is True:
+            logger.warning(f"【{self.cookie_id}】⚠️ 网页登录态与图片上传校验结果不一致，按保守策略视为结果不确定")
+            result['inconclusive'] = True
+            result['relogin_recommended'] = False
+            result['details'].append("校验结果: 网页登录态与图片上传结果不一致")
+
         # 汇总结果
         if result['valid']:
             if result['inconclusive']:
-                logger.warning(f"【{self.cookie_id}】⚠️ Cookie验证结果不确定: 未发现明确失效证据，但部分校验受网络影响")
+                logger.warning(f"【{self.cookie_id}】⚠️ Cookie验证结果不确定: 未发现明确失效证据，但部分校验存在波动或结果矛盾")
             else:
                 logger.info(f"【{self.cookie_id}】✅ Cookie验证通过: 所有关键API均可用")
         else:
@@ -7107,7 +7220,7 @@ Cookie数量: {cookie_count}
 
             if not qq_number:
                 logger.warning("📱 QQ通知 - QQ号码配置为空，无法发送通知")
-                return
+                return False
 
             # 构建请求URL
             api_url = "http://36.111.68.231:3000/sendPrivateMsg"
@@ -7128,17 +7241,21 @@ Cookie数量: {cookie_count}
                     # 需求：502 视为成功，且不打印返回内容
                     if response.status == 502:
                         logger.info(f"📱 QQ通知发送成功: {qq_number} (状态码: {response.status})")
+                        return True
                     elif response.status == 200:
                         logger.info(f"📱 QQ通知发送成功: {qq_number} (状态码: {response.status})")
                         logger.warning(f"📱 QQ通知 - 响应内容: {response_text}")
+                        return True
                     else:
                         logger.warning(f"📱 QQ通知发送失败: HTTP {response.status}")
                         logger.warning(f"📱 QQ通知 - 响应内容: {response_text}")
+                        return False
 
         except Exception as e:
             logger.error(f"📱 发送QQ通知异常: {self._safe_str(e)}")
             import traceback
             logger.error(f"📱 QQ通知异常详情: {traceback.format_exc()}")
+            return False
 
     async def _send_dingtalk_notification(self, config_data: dict, message: str):
         """发送钉钉通知"""
@@ -7157,7 +7274,7 @@ Cookie数量: {cookie_count}
             webhook_url = webhook_url.strip() if webhook_url else ''
             if not webhook_url:
                 logger.warning("钉钉通知配置为空")
-                return
+                return False
 
             # 如果有加签密钥，生成签名
             if secret:
@@ -7181,11 +7298,14 @@ Cookie数量: {cookie_count}
                 async with session.post(webhook_url, json=data, timeout=10) as response:
                     if response.status == 200:
                         logger.info(f"钉钉通知发送成功")
+                        return True
                     else:
                         logger.warning(f"钉钉通知发送失败: {response.status}")
+                        return False
 
         except Exception as e:
             logger.error(f"发送钉钉通知异常: {self._safe_str(e)}")
+            return False
 
     async def _send_feishu_notification(self, config_data: dict, message: str):
         """发送飞书通知"""
@@ -7207,7 +7327,7 @@ Cookie数量: {cookie_count}
 
             if not webhook_url:
                 logger.warning("📱 飞书通知 - Webhook URL配置为空，无法发送通知")
-                return
+                return False
 
             # 如果有加签密钥，生成签名
             timestamp = str(int(time.time()))
@@ -7250,17 +7370,22 @@ Cookie数量: {cookie_count}
                             response_json = json.loads(response_text)
                             if response_json.get('code') == 0:
                                 logger.info(f"📱 飞书通知发送成功")
+                                return True
                             else:
                                 logger.warning(f"📱 飞书通知发送失败: {response_json.get('msg', '未知错误')}")
+                                return False
                         except json.JSONDecodeError:
                             logger.info(f"📱 飞书通知发送成功（响应格式异常）")
+                            return True
                     else:
                         logger.warning(f"📱 飞书通知发送失败: HTTP {response.status}, 响应: {response_text}")
+                        return False
 
         except Exception as e:
             logger.error(f"📱 发送飞书通知异常: {self._safe_str(e)}")
             import traceback
             logger.error(f"📱 飞书通知异常详情: {traceback.format_exc()}")
+            return False
 
     async def _send_bark_notification(self, config_data: dict, message: str):
         """发送Bark通知"""
@@ -7286,7 +7411,7 @@ Cookie数量: {cookie_count}
 
             if not device_key:
                 logger.warning("📱 Bark通知 - 设备密钥配置为空，无法发送通知")
-                return
+                return False
 
             # 构建请求URL和数据
             # Bark支持两种方式：URL路径方式和POST JSON方式
@@ -7324,21 +7449,27 @@ Cookie数量: {cookie_count}
                             response_json = json.loads(response_text)
                             if response_json.get('code') == 200:
                                 logger.info(f"📱 Bark通知发送成功")
+                                return True
                             else:
                                 logger.warning(f"📱 Bark通知发送失败: {response_json.get('message', '未知错误')}")
+                                return False
                         except json.JSONDecodeError:
                             # 某些Bark服务器可能返回纯文本
                             if 'success' in response_text.lower() or 'ok' in response_text.lower():
                                 logger.info(f"📱 Bark通知发送成功")
+                                return True
                             else:
                                 logger.warning(f"📱 Bark通知响应格式异常: {response_text}")
+                                return False
                     else:
                         logger.warning(f"📱 Bark通知发送失败: HTTP {response.status}, 响应: {response_text}")
+                        return False
 
         except Exception as e:
             logger.error(f"📱 发送Bark通知异常: {self._safe_str(e)}")
             import traceback
             logger.error(f"📱 Bark通知异常详情: {traceback.format_exc()}")
+            return False
 
     async def _send_email_notification(self, config_data: dict, message: str, attachment_path: str = None):
         """发送邮件通知（支持附件）
@@ -7365,7 +7496,7 @@ Cookie数量: {cookie_count}
 
             if not all([smtp_server, email_user, email_password, recipient_email]):
                 logger.warning("邮件通知配置不完整")
-                return
+                return False
 
             # 创建邮件
             msg = MIMEMultipart()
@@ -7449,6 +7580,7 @@ Cookie数量: {cookie_count}
                 
                 server.send_message(msg)
                 logger.info(f"邮件通知发送成功: {recipient_email}")
+                return True
 
             finally:
                 # 确保关闭连接
@@ -7463,15 +7595,17 @@ Cookie数量: {cookie_count}
 
         except smtplib.SMTPAuthenticationError:
             # 认证错误已在上面处理，这里不再重复记录
-            pass
+            return False
         except smtplib.SMTPException as smtp_error:
             logger.error(f"SMTP协议错误: {self._safe_str(smtp_error)}")
             logger.error(f"SMTP服务器: {smtp_server}:{smtp_port}")
             logger.error(f"请检查SMTP服务器地址和端口配置是否正确")
+            return False
         except Exception as e:
             logger.error(f"发送邮件通知异常: {self._safe_str(e)}")
             import traceback
             logger.error(f"邮件发送详细错误: {traceback.format_exc()}")
+            return False
 
     async def _send_webhook_notification(self, config_data: dict, message: str):
         """发送Webhook通知"""
@@ -7486,7 +7620,7 @@ Cookie数量: {cookie_count}
 
             if not webhook_url:
                 logger.warning("Webhook通知配置为空")
-                return
+                return False
 
             # 解析自定义请求头
             try:
@@ -7510,19 +7644,25 @@ Cookie数量: {cookie_count}
                     async with session.post(webhook_url, json=data, headers=headers, timeout=10) as response:
                         if response.status == 200:
                             logger.info(f"Webhook通知发送成功")
+                            return True
                         else:
                             logger.warning(f"Webhook通知发送失败: {response.status}")
+                            return False
                 elif http_method == 'PUT':
                     async with session.put(webhook_url, json=data, headers=headers, timeout=10) as response:
                         if response.status == 200:
                             logger.info(f"Webhook通知发送成功")
+                            return True
                         else:
                             logger.warning(f"Webhook通知发送失败: {response.status}")
+                            return False
                 else:
                     logger.warning(f"不支持的HTTP方法: {http_method}")
+                    return False
 
         except Exception as e:
             logger.error(f"发送Webhook通知异常: {self._safe_str(e)}")
+            return False
 
     async def _send_wechat_notification(self, config_data: dict, message: str):
         """发送微信通知"""
@@ -7535,7 +7675,7 @@ Cookie数量: {cookie_count}
 
             if not webhook_url:
                 logger.warning("微信通知配置为空")
-                return
+                return False
 
             data = {
                 "msgtype": "text",
@@ -7548,11 +7688,14 @@ Cookie数量: {cookie_count}
                 async with session.post(webhook_url, json=data, timeout=10) as response:
                     if response.status == 200:
                         logger.info(f"微信通知发送成功")
+                        return True
                     else:
                         logger.warning(f"微信通知发送失败: {response.status}")
+                        return False
 
         except Exception as e:
             logger.error(f"发送微信通知异常: {self._safe_str(e)}")
+            return False
 
     async def _send_telegram_notification(self, config_data: dict, message: str):
         """发送Telegram通知"""
@@ -7565,7 +7708,7 @@ Cookie数量: {cookie_count}
 
             if not all([bot_token, chat_id]):
                 logger.warning("Telegram通知配置不完整")
-                return
+                return False
 
             # 构建API URL
             api_url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
@@ -7580,11 +7723,14 @@ Cookie数量: {cookie_count}
                 async with session.post(api_url, json=data, timeout=10) as response:
                     if response.status == 200:
                         logger.info(f"Telegram通知发送成功")
+                        return True
                     else:
                         logger.warning(f"Telegram通知发送失败: {response.status}")
+                        return False
 
         except Exception as e:
             logger.error(f"发送Telegram通知异常: {self._safe_str(e)}")
+            return False
 
     async def send_token_refresh_notification(self, error_message: str, notification_type: str = "token_refresh", chat_id: str = None, attachment_path: str = None, verification_url: str = None):
         """发送Token刷新异常通知（带防重复机制，支持附件）
@@ -7722,35 +7868,31 @@ Cookie数量: {cookie_count}
                 try:
                     # 解析配置数据
                     config_data = self._parse_notification_config(channel_config)
+                    channel_sent = False
 
                     match channel_type:
                         case 'qq':
-                            await self._send_qq_notification(config_data, notification_msg)
-                            notification_sent = True
+                            channel_sent = await self._send_qq_notification(config_data, notification_msg)
                         case 'ding_talk' | 'dingtalk':
-                            await self._send_dingtalk_notification(config_data, notification_msg)
-                            notification_sent = True
+                            channel_sent = await self._send_dingtalk_notification(config_data, notification_msg)
                         case 'feishu' | 'lark':
-                            await self._send_feishu_notification(config_data, notification_msg)
-                            notification_sent = True
+                            channel_sent = await self._send_feishu_notification(config_data, notification_msg)
                         case 'bark':
-                            await self._send_bark_notification(config_data, notification_msg)
-                            notification_sent = True
+                            channel_sent = await self._send_bark_notification(config_data, notification_msg)
                         case 'email':
                             # 邮件支持附件
-                            await self._send_email_notification(config_data, notification_msg, attachment_path)
-                            notification_sent = True
+                            channel_sent = await self._send_email_notification(config_data, notification_msg, attachment_path)
                         case 'webhook':
-                            await self._send_webhook_notification(config_data, notification_msg)
-                            notification_sent = True
+                            channel_sent = await self._send_webhook_notification(config_data, notification_msg)
                         case 'wechat':
-                            await self._send_wechat_notification(config_data, notification_msg)
-                            notification_sent = True
+                            channel_sent = await self._send_wechat_notification(config_data, notification_msg)
                         case 'telegram':
-                            await self._send_telegram_notification(config_data, notification_msg)
-                            notification_sent = True
+                            channel_sent = await self._send_telegram_notification(config_data, notification_msg)
                         case _:
                             logger.warning(f"不支持的通知渠道类型: {channel_type}")
+
+                    if channel_sent:
+                        notification_sent = True
 
                 except Exception as notify_error:
                     logger.error(f"发送Token刷新通知失败 ({notification.get('channel_name', 'Unknown')}): {self._safe_str(notify_error)}")

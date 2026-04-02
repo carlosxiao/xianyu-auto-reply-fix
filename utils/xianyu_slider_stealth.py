@@ -167,7 +167,7 @@ GOLDEN_PARAMS = {
 # ============================================================================
 ML_STRATEGY_CONFIG = {
     # 🔧 2026-01-28：降低探索率，更多使用已验证有效的参数
-    "exploration_rate": 0.10,  # 🔧 从0.15降到0.10，减少不稳定因素
+    "exploration_rate": 0.06,  # 进一步降低探索率，优先复用已验证有效的参数
 
     # 连续失败后切换慢速兜底的阈值基线
     "force_explore_after_failures": 2,  # 第3次尝试会进入慢速兜底
@@ -181,7 +181,7 @@ ML_STRATEGY_CONFIG = {
             "base_delay": (0.010, 0.020),      # 🔧 增加延迟（10-20ms）
             "acceleration_curve": (1.8, 2.4),  # 更平滑的ease-out
             "y_jitter_max": (0.8, 2.0),        # 较小Y抖动
-            "weight": 0.30,                     # 🔧 提高权重（原0.25）
+            "weight": 0.18,
         },
         # 标准策略：中等超调，模拟普通用户
         "standard": {
@@ -190,7 +190,7 @@ ML_STRATEGY_CONFIG = {
             "base_delay": (0.006, 0.015),      # 6-15ms延迟
             "acceleration_curve": (1.5, 2.1),
             "y_jitter_max": (1.2, 2.8),
-            "weight": 0.45,                     # 保持主力策略
+            "weight": 0.47,
         },
         # 激进策略：较大超调，模拟快速用户
         "aggressive": {
@@ -199,7 +199,7 @@ ML_STRATEGY_CONFIG = {
             "base_delay": (0.004, 0.012),      # 4-12ms延迟
             "acceleration_curve": (1.3, 1.9),  # 更陡的加速曲线
             "y_jitter_max": (1.5, 3.2),
-            "weight": 0.25,                     # 🔧 降低权重（原0.30）
+            "weight": 0.35,
         },
     },
 
@@ -268,9 +268,9 @@ class AdaptiveStrategyManager:
             }
             # 动态权重
             self.dynamic_weights = {
-                "conservative": 0.25,
-                "standard": 0.50,
-                "aggressive": 0.25,
+                "conservative": 0.18,
+                "standard": 0.47,
+                "aggressive": 0.35,
             }
             # 统计文件路径
             self.stats_file = "trajectory_history/adaptive_strategy_stats.json"
@@ -407,17 +407,27 @@ class AdaptiveStrategyManager:
         with self.stats_lock:
             # 基础权重
             weights = self.dynamic_weights.copy()
+
+            # 固定给低成功率策略一个更低上限，避免无头链路过度分配到保守分支
+            weights["conservative"] = min(0.22, max(0.12, weights.get("conservative", 0.18)))
+            weights["standard"] = max(0.40, weights.get("standard", 0.47))
+            weights["aggressive"] = max(0.28, weights.get("aggressive", 0.35))
+
+            total = sum(weights.values())
+            if total > 0:
+                for strategy in list(weights.keys()):
+                    weights[strategy] = weights[strategy] / total
             
             # 根据尝试次数微调
             if attempt >= 3:
-                # 第3次及以后，增加激进策略的权重
-                weights["aggressive"] = min(0.50, weights.get("aggressive", 0.25) + 0.10)
+                # 第3次尝试优先走更果断的轨迹，不再依赖低收益慢速分支
+                weights["aggressive"] = min(0.55, weights.get("aggressive", 0.35) + 0.12)
                 # 相应减少其他策略
-                total_other = weights.get("conservative", 0.25) + weights.get("standard", 0.50)
+                total_other = weights.get("conservative", 0.18) + weights.get("standard", 0.47)
                 if total_other > 0:
                     factor = (1 - weights["aggressive"]) / total_other
-                    weights["conservative"] = weights.get("conservative", 0.25) * factor
-                    weights["standard"] = weights.get("standard", 0.50) * factor
+                    weights["conservative"] = weights.get("conservative", 0.18) * factor
+                    weights["standard"] = weights.get("standard", 0.47) * factor
             
             return weights
     
@@ -805,11 +815,15 @@ class XianyuSliderStealth:
         
         self.success_history_file = f"trajectory_history/{self.pure_user_id}_success.json"
         self.failure_history_file = f"trajectory_history/{self.pure_user_id}_failure.json"
+        self.browser_profile_file = f"trajectory_history/{self.pure_user_id}_browser_profile.json"
         self.last_verification_feedback = {}
         self.last_login_error = ""
         self._slider_refresh_mode = False
         self.risk_session_id = None
         self.risk_trigger_scene = None
+        self.browser_features = {}
+        self.browser_identity = {}
+        self.profile_id = "unassigned"
         self.trajectory_params = {
             "total_steps_range": [5, 8],  # 极速：5-8步（超快滑动）
             "base_delay_range": [0.0002, 0.0005],  # 极速：0.2-0.5ms延迟
@@ -983,7 +997,139 @@ class XianyuSliderStealth:
         except Exception as e:
             logger.error(f"【{self.pure_user_id}】日期验证出错: {str(e)}")
             return False
-        
+
+    def _stable_number(self, namespace: str) -> int:
+        digest = hashlib.sha256(f"{self.pure_user_id}:{namespace}".encode("utf-8")).hexdigest()
+        return int(digest[:12], 16)
+
+    def _load_or_create_browser_identity(self, profile_count: int, language_count: int) -> Dict[str, Any]:
+        if self.browser_identity:
+            return self.browser_identity
+
+        identity = None
+        try:
+            if os.path.exists(self.browser_profile_file):
+                with open(self.browser_profile_file, "r", encoding="utf-8") as f:
+                    loaded = json.load(f)
+                if isinstance(loaded, dict):
+                    profile_index = int(loaded.get("profile_index", -1))
+                    language_index = int(loaded.get("language_index", -1))
+                    if 0 <= profile_index < profile_count and 0 <= language_index < language_count:
+                        identity = loaded
+        except Exception as e:
+            logger.warning(f"【{self.pure_user_id}】加载浏览器画像失败，重新生成: {e}")
+
+        if identity is None:
+            identity = {
+                "profile_version": 2,
+                "profile_index": self._stable_number("browser_profile") % max(1, profile_count),
+                "language_index": self._stable_number("browser_language") % max(1, language_count),
+                "color_scheme": ["light", "no-preference"][self._stable_number("color_scheme") % 2],
+                "plugin_count": 4 + (self._stable_number("plugin_count") % 3),
+                "notification_permission": ["default", "denied"][self._stable_number("notification_permission") % 2],
+                "do_not_track": ["0", "1", "unspecified"][self._stable_number("do_not_track") % 3],
+                "battery_charging": bool(self._stable_number("battery_charging") % 2),
+                "battery_level": round(0.45 + (self._stable_number("battery_level") % 45) / 100, 2),
+                "created_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            }
+
+            try:
+                os.makedirs(os.path.dirname(self.browser_profile_file), exist_ok=True)
+                with open(self.browser_profile_file, "w", encoding="utf-8") as f:
+                    json.dump(identity, f, indent=2, ensure_ascii=False)
+            except Exception as e:
+                logger.warning(f"【{self.pure_user_id}】保存浏览器画像失败: {e}")
+
+        self.browser_identity = identity
+        return identity
+
+    def _update_current_result_meta(
+        self,
+        status: str,
+        attempt: Optional[int] = None,
+        cookie_refresh_confirmed: Optional[bool] = None,
+        soft_success: bool = False,
+        note: Optional[str] = None,
+    ):
+        if not hasattr(self, "current_trajectory_data"):
+            return
+
+        result = self.current_trajectory_data.setdefault("verification_result", {})
+        result.update({
+            "status": status,
+            "attempt": attempt,
+            "soft_success": soft_success,
+            "cookie_refresh_confirmed": cookie_refresh_confirmed,
+            "feedback": dict(self.last_verification_feedback or {}),
+            "profile_id": self.profile_id,
+            "headless": self.headless,
+            "updated_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        })
+        if note:
+            result["note"] = note
+
+    def _should_accept_soft_success_without_cookie_refresh(
+        self,
+        current_cookies: Dict[str, str],
+        fallback_page=None,
+    ) -> Tuple[bool, str]:
+        feedback = self.last_verification_feedback or {}
+        feedback_source = str(feedback.get("source") or "")
+        accepted_sources = {
+            "frame_detached",
+            "container_missing",
+            "page_changed",
+            "login_element_detected",
+            "context_login_confirmed",
+        }
+
+        monitor_page = fallback_page or self.page
+        if self.context:
+            monitor_page = self._select_monitor_page(self.context, monitor_page)
+
+        if not monitor_page:
+            return False, ""
+
+        try:
+            if self._check_login_success_by_element(monitor_page):
+                return True, "登录成功元素已出现，接受无 Cookie 变更的软成功"
+        except Exception:
+            pass
+
+        monitor_url = self._safe_page_url(monitor_page)
+        page_has_slider = self._page_has_slider(monitor_page)
+        page_looks_verify = self._page_looks_like_verification(monitor_page)
+
+        if feedback_source in accepted_sources and not page_has_slider and not page_looks_verify:
+            return True, f"页面已脱离验证态({feedback_source})，接受软成功"
+
+        if self._has_completed_login_cookies(current_cookies) and not page_has_slider:
+            if not page_looks_verify or self._is_logged_in_url(monitor_url):
+                return True, "关键登录 Cookie 已完整，且页面已脱离滑块态"
+
+        return False, ""
+
+    def _warmup_slider_context(self, target_url: Optional[str] = None):
+        if not self.page:
+            return
+
+        warmup_urls = [
+            "https://www.goofish.com",
+            "https://www.goofish.com/im",
+        ]
+
+        for warmup_url in warmup_urls:
+            if target_url and warmup_url == target_url:
+                continue
+            try:
+                logger.info(f"【{self.pure_user_id}】预热访问: {warmup_url}")
+                self.page.goto(warmup_url, wait_until="domcontentloaded", timeout=15000)
+                time.sleep(random.uniform(0.8, 1.6))
+                self.page.mouse.move(random.randint(260, 980), random.randint(180, 620))
+                time.sleep(random.uniform(0.05, 0.12))
+            except Exception as e:
+                logger.debug(f"【{self.pure_user_id}】预热访问失败({warmup_url}): {e}")
+
     def init_browser(self):
         """初始化浏览器 - 增强反检测版本"""
         try:
@@ -992,66 +1138,33 @@ class XianyuSliderStealth:
             self.playwright = sync_playwright().start()
             logger.info(f"【{self.pure_user_id}】Playwright启动成功")
             
-            # 随机选择浏览器特征
+            # 为账号加载稳定浏览器画像
             browser_features = self._get_random_browser_features()
+            self.browser_features = browser_features
+            self.profile_id = browser_features.get("profile_id", "unknown")
             
-            # 启动浏览器，使用随机特征
-            logger.info(f"【{self.pure_user_id}】启动浏览器，headless模式: {self.headless}")
+            # 启动浏览器，使用稳定特征
+            logger.info(
+                f"【{self.pure_user_id}】启动浏览器，headless模式: {self.headless}, "
+                f"画像: {self.profile_id}, UA: {browser_features['user_agent']}"
+            )
             self.browser = self.playwright.chromium.launch(
                 headless=self.headless,
                 args=[
                     "--no-sandbox",
                     "--disable-setuid-sandbox",
                     "--disable-dev-shm-usage",
-                    "--disable-accelerated-2d-canvas",
                     "--no-first-run",
-                    "--no-zygote",
                     "--disable-gpu",
-                    "--disable-web-security",
-                    "--disable-features=VizDisplayCompositor",
-                    "--start-maximized",  # 窗口最大化
                     f"--window-size={browser_features['window_size']}",
-                    "--disable-background-timer-throttling",
-                    "--disable-backgrounding-occluded-windows",
-                    "--disable-renderer-backgrounding",
                     f"--lang={browser_features['lang']}",
                     f"--accept-lang={browser_features['accept_lang']}",
                     "--disable-blink-features=AutomationControlled",
-                    "--disable-extensions",
-                    "--disable-plugins",
-                    "--disable-default-apps",
-                    "--disable-sync",
-                    "--disable-translate",
-                    "--hide-scrollbars",
                     "--mute-audio",
                     "--no-default-browser-check",
-                    "--disable-logging",
-                    "--disable-permissions-api",
-                    "--disable-notifications",
-                    "--disable-popup-blocking",
-                    "--disable-prompt-on-repost",
-                    "--disable-hang-monitor",
-                    "--disable-client-side-phishing-detection",
-                    "--disable-component-extensions-with-background-pages",
-                    "--disable-background-mode",
-                    "--disable-domain-reliability",
-                    "--disable-features=TranslateUI",
-                    "--disable-ipc-flooding-protection",
-                    "--disable-field-trial-config",
-                    "--disable-background-networking",
-                    "--disable-back-forward-cache",
-                    "--disable-breakpad",
-                    "--disable-component-update",
                     "--force-color-profile=srgb",
-                    "--metrics-recording-only",
                     "--password-store=basic",
                     "--use-mock-keychain",
-                    "--no-service-autorun",
-                    "--export-tagged-pdf",
-                    "--disable-search-engine-choice-screen",
-                    "--unsafely-disable-devtools-self-xss-warnings",
-                    "--edge-skip-compat-layer-relaunch",
-                    "--allow-pre-commit-input"
                 ]
             )
             
@@ -1068,14 +1181,8 @@ class XianyuSliderStealth:
                 'user_agent': browser_features['user_agent'],
                 'locale': browser_features['locale'],
                 'timezone_id': browser_features['timezone_id'],
-                # 🔑 添加真实的权限设置
-                'permissions': ['geolocation', 'notifications'],
-                # 🔑 添加真实的色彩方案
-                'color_scheme': random.choice(['light', 'dark', 'no-preference']),
-                # 🔑 添加HTTP凭据
-                'http_credentials': None,
-                # 🔑 忽略HTTPS错误（某些情况下更真实）
-                'ignore_https_errors': False,
+                'color_scheme': browser_features['color_scheme'],
+                'extra_http_headers': {'Accept-Language': browser_features['accept_lang']},
             }
             
             # 根据模式配置viewport和no_viewport
@@ -1189,6 +1296,7 @@ class XianyuSliderStealth:
             # 获取随机参数
             random_params = trajectory_data.get("random_params", {})
             slide_behavior = trajectory_data.get("slide_behavior", {})
+            verification_result = trajectory_data.get("verification_result", {})
             
             # 添加新记录 - 保存完整的随机参数用于学习
             record = {
@@ -1236,6 +1344,9 @@ class XianyuSliderStealth:
                 "final_left_px": trajectory_data.get("final_left_px", 0),
                 "completion_used": trajectory_data.get("completion_used", False),
                 "completion_steps": trajectory_data.get("completion_steps", 0),
+                "profile_id": verification_result.get("profile_id", self.profile_id),
+                "headless": verification_result.get("headless", self.headless),
+                "verification_result": verification_result,
                 "success": True
             }
             
@@ -1273,6 +1384,7 @@ class XianyuSliderStealth:
             random_params = trajectory_data.get("random_params", {})
             slide_behavior = trajectory_data.get("slide_behavior", {})
             verification_feedback = failure_info.get("verification_feedback", {})
+            verification_result = trajectory_data.get("verification_result", {})
 
             try:
                 page_url = self.page.url if self.page else ""
@@ -1320,6 +1432,9 @@ class XianyuSliderStealth:
                     "total_elapsed_time": slide_behavior.get("total_elapsed_time", 0),
                 },
                 "verification_feedback": verification_feedback,
+                "verification_result": verification_result,
+                "profile_id": verification_result.get("profile_id", self.profile_id),
+                "headless": verification_result.get("headless", self.headless),
                 "page_url": page_url,
                 "page_title": page_title,
                 "success": False
@@ -2315,14 +2430,15 @@ class XianyuSliderStealth:
         return False, {}
     
     def _get_random_browser_features(self):
-        """获取随机浏览器特征 - 基于预定义 Profile 保证指纹一致性
+        """获取稳定浏览器特征。
 
-        所有指纹信号（UA、platform、屏幕、硬件、网络）作为一个整体 Profile 轮转，
-        避免 Windows UA 搭配 MacIntel platform 等矛盾被检测。
+        同一账号长期复用同一套桌面画像，避免后台无头链路在每次重启后漂移成
+        不同设备，降低风控对“同账号多台机器来回切换”的判定概率。
         """
         BROWSER_PROFILES = [
             # Windows Chrome 120 - 高配台式机
             {
+                'profile_id': 'win_chrome_120_desktop',
                 'user_agent': "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
                 'platform': 'Win32',
                 'vendor': 'Google Inc.',
@@ -2335,6 +2451,7 @@ class XianyuSliderStealth:
             },
             # Windows Chrome 120 - 中配笔记本
             {
+                'profile_id': 'win_chrome_120_laptop',
                 'user_agent': "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
                 'platform': 'Win32',
                 'vendor': 'Google Inc.',
@@ -2347,6 +2464,7 @@ class XianyuSliderStealth:
             },
             # Windows Chrome 119 - 高配台式机
             {
+                'profile_id': 'win_chrome_119_desktop',
                 'user_agent': "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36",
                 'platform': 'Win32',
                 'vendor': 'Google Inc.',
@@ -2359,6 +2477,7 @@ class XianyuSliderStealth:
             },
             # Windows Chrome 118 - 标准台式机
             {
+                'profile_id': 'win_chrome_118_standard',
                 'user_agent': "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/118.0.0.0 Safari/537.36",
                 'platform': 'Win32',
                 'vendor': 'Google Inc.',
@@ -2371,6 +2490,7 @@ class XianyuSliderStealth:
             },
             # Mac Chrome 120 - MacBook Pro
             {
+                'profile_id': 'mac_chrome_120_pro',
                 'user_agent': "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
                 'platform': 'MacIntel',
                 'vendor': 'Google Inc.',
@@ -2383,6 +2503,7 @@ class XianyuSliderStealth:
             },
             # Mac Chrome 119 - MacBook Air
             {
+                'profile_id': 'mac_chrome_119_air',
                 'user_agent': "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36",
                 'platform': 'MacIntel',
                 'vendor': 'Google Inc.',
@@ -2395,15 +2516,16 @@ class XianyuSliderStealth:
             },
         ]
 
-        profile = random.choice(BROWSER_PROFILES)
-
-        # 随机选择语言（中文用户通用，与平台无关）
         languages = [
             ("zh-CN", "zh-CN,zh;q=0.9,en;q=0.8"),
             ("zh-CN", "zh-CN,zh;q=0.9"),
             ("zh-CN", "zh-CN,zh;q=0.8,en;q=0.6")
         ]
-        lang, accept_lang = random.choice(languages)
+
+        identity = self._load_or_create_browser_identity(len(BROWSER_PROFILES), len(languages))
+
+        profile = BROWSER_PROFILES[identity["profile_index"]]
+        lang, accept_lang = languages[identity["language_index"]]
 
         # 解析窗口大小
         width, height = map(int, profile['window_size'].split(','))
@@ -2413,6 +2535,7 @@ class XianyuSliderStealth:
         connection_downlink = round(random.uniform(3, 10), 2)
 
         return {
+            'profile_id': profile['profile_id'],
             'window_size': profile['window_size'],
             'lang': lang,
             'accept_lang': accept_lang,
@@ -2434,6 +2557,12 @@ class XianyuSliderStealth:
             'connection_type': '4g',
             'connection_rtt': connection_rtt,
             'connection_downlink': connection_downlink,
+            'color_scheme': identity.get('color_scheme', 'light'),
+            'plugin_count': identity.get('plugin_count', 5),
+            'notification_permission': identity.get('notification_permission', 'default'),
+            'do_not_track': identity.get('do_not_track', '0'),
+            'battery_charging': identity.get('battery_charging', True),
+            'battery_level': identity.get('battery_level', 0.76),
         }
     
     def _get_stealth_script(self, browser_features):
@@ -2450,7 +2579,7 @@ class XianyuSliderStealth:
             delete window.navigator.__proto__.webdriver;
             
             // 覆盖plugins - 随机化
-            const pluginCount = {random.randint(3, 8)};
+            const pluginCount = {browser_features['plugin_count']};
             Object.defineProperty(navigator, 'plugins', {{
                 get: () => Array.from({{length: pluginCount}}, (_, i) => ({{
                     name: 'Plugin' + i,
@@ -2638,8 +2767,8 @@ class XianyuSliderStealth:
                 const originalGetBattery = navigator.getBattery;
                 navigator.getBattery = async function() {{
                     const battery = await originalGetBattery.call(navigator);
-                    Object.defineProperty(battery, 'charging', {{ get: () => {random.choice(['true', 'false'])} }});
-                    Object.defineProperty(battery, 'level', {{ get: () => {random.uniform(0.3, 0.95):.2f} }});
+                        Object.defineProperty(battery, 'charging', {{ get: () => {str(browser_features['battery_charging']).lower()} }});
+                        Object.defineProperty(battery, 'level', {{ get: () => {browser_features['battery_level']:.2f} }});
                     return battery;
                 }};
             }}
@@ -2656,7 +2785,7 @@ class XianyuSliderStealth:
             const originalQuery = Permissions.prototype.query;
             Permissions.prototype.query = function(parameters) {{
                 if (parameters.name === 'notifications') {{
-                    return Promise.resolve({{ state: 'denied' }});
+                    return Promise.resolve({{ state: '{browser_features['notification_permission']}' }});
                 }}
                 return originalQuery.apply(this, arguments);
             }};
@@ -2703,14 +2832,14 @@ class XianyuSliderStealth:
             // 伪装 Notification 权限（防止被检测为自动化）
             Object.defineProperty(Notification, 'permission', {{
                 get: function() {{
-                    return ['default', 'granted', 'denied'][Math.floor(Math.random() * 3)];
+                    return '{browser_features['notification_permission']}';
                 }}
             }});
 
             // 伪装 DoNotTrack
             Object.defineProperty(navigator, 'doNotTrack', {{
                 get: function() {{
-                    return ['1', '0', 'unspecified', null][Math.floor(Math.random() * 4)];
+                    return '{browser_features['do_not_track']}';
                 }}
             }});
             
@@ -2854,7 +2983,7 @@ class XianyuSliderStealth:
         🎰 当前重试策略：
         - 第1次优先利用历史成功参数
         - 第2次继续利用，但主动放慢节奏
-        - 第3次切换慢速兜底策略
+        - 第3次切换到更果断的高收益分支，不再使用 slow_fallback
         """
         try:
             # 记录轨迹生成前的随机种子状态（用于分析）
@@ -2873,21 +3002,13 @@ class XianyuSliderStealth:
             profile_name = "primary"
 
             if attempt >= slow_fallback_threshold:
-                # 第 3 次及以后：轮换策略（保守→激进→慢速兜底），避免重复同一模式被识别
-                rotation_strategies = ["conservative", "aggressive", "slow_fallback"]
+                # 第 3 次及以后：仅在高收益分支中轮换，移除 slow_fallback
+                rotation_strategies = ["aggressive", "standard"]
                 rotation_idx = (attempt - slow_fallback_threshold) % len(rotation_strategies)
                 selected_strategy = rotation_strategies[rotation_idx]
                 profile_name = f"retry_rotation_{selected_strategy}"
 
-                if selected_strategy == "conservative":
-                    # 保守策略：小超调、多步数、慢速
-                    strategy_config = ML_STRATEGY_CONFIG["strategies"]["conservative"]
-                    overshoot_ratio = random.uniform(*strategy_config["overshoot_ratio"])
-                    steps = random.randint(*strategy_config["steps"])
-                    base_delay = random.uniform(*strategy_config["base_delay"])
-                    acceleration_curve = random.uniform(*strategy_config["acceleration_curve"])
-                    y_jitter_max = random.uniform(*strategy_config["y_jitter_max"])
-                elif selected_strategy == "aggressive":
+                if selected_strategy == "aggressive":
                     # 激进策略：大超调、少步数、快速
                     strategy_config = ML_STRATEGY_CONFIG["strategies"]["aggressive"]
                     overshoot_ratio = random.uniform(*strategy_config["overshoot_ratio"])
@@ -2896,22 +3017,13 @@ class XianyuSliderStealth:
                     acceleration_curve = random.uniform(*strategy_config["acceleration_curve"])
                     y_jitter_max = random.uniform(*strategy_config["y_jitter_max"])
                 else:
-                    # 慢速兜底
-                    overshoot_min = max(1.03, effective_ranges["overshoot"][0])
-                    overshoot_max = min(1.12, max(overshoot_min + 0.03, effective_ranges["overshoot"][1]))
-                    delay_min = max(0.010, effective_ranges["delay"][0] * 1.25)
-                    delay_max = min(0.020, max(delay_min + 0.003, effective_ranges["delay"][1] * 1.60))
-                    curve_min = max(1.75, min(2.35, effective_ranges["curve"][0]))
-                    curve_max = min(2.40, max(curve_min + 0.15, effective_ranges["curve"][1] + 0.15))
-                    jitter_min = max(1.5, effective_ranges["jitter"][0])
-                    jitter_max = min(bounds.get("max_y_jitter", 3.5), max(jitter_min + 0.4, effective_ranges["jitter"][1] + 0.4))
-                    steps_min = max(28, effective_ranges["steps"][0] + 4)
-                    steps_max = min(42, max(steps_min + 2, effective_ranges["steps"][1] + 8))
-                    overshoot_ratio = random.uniform(overshoot_min, overshoot_max)
-                    steps = random.randint(steps_min, steps_max)
-                    base_delay = random.uniform(delay_min, delay_max)
-                    acceleration_curve = random.uniform(curve_min, curve_max)
-                    y_jitter_max = random.uniform(jitter_min, jitter_max)
+                    # 标准策略：作为第3次后的稳态兜底
+                    strategy_config = ML_STRATEGY_CONFIG["strategies"]["standard"]
+                    overshoot_ratio = random.uniform(*strategy_config["overshoot_ratio"])
+                    steps = random.randint(*strategy_config["steps"])
+                    base_delay = random.uniform(*strategy_config["base_delay"])
+                    acceleration_curve = random.uniform(*strategy_config["acceleration_curve"])
+                    y_jitter_max = random.uniform(*strategy_config["y_jitter_max"])
 
                 logger.info(
                     f"【{self.pure_user_id}】🛟 第{attempt}次尝试，轮换策略[{selected_strategy}]: "
@@ -3008,6 +3120,8 @@ class XianyuSliderStealth:
             self.current_trajectory_data = {
                 "distance": distance,
                 "model": "physics_fast_learned" if optimized_params.get("learning_enabled") else "physics_fast",
+                "browser_profile_id": self.profile_id,
+                "headless": self.headless,
                 "total_steps": len(trajectory),
                 "trajectory_points": trajectory.copy(),
                 "final_left_px": 0,
@@ -3056,11 +3170,11 @@ class XianyuSliderStealth:
             logger.warning(f"【{self.pure_user_id}】获取动态权重失败: {e}，使用默认权重")
             # 回退到静态权重
             if attempt <= 2:
-                weights = {"conservative": 0.35, "standard": 0.50, "aggressive": 0.15}
+                weights = {"conservative": 0.18, "standard": 0.52, "aggressive": 0.30}
             elif attempt == 3:
-                weights = {"conservative": 0.30, "standard": 0.35, "aggressive": 0.35}
+                weights = {"conservative": 0.12, "standard": 0.38, "aggressive": 0.50}
             else:
-                weights = {"conservative": 0.25, "standard": 0.25, "aggressive": 0.50}
+                weights = {"conservative": 0.10, "standard": 0.30, "aggressive": 0.60}
         
         # 按权重随机选择策略
         rand_val = random.random()
@@ -4338,6 +4452,16 @@ class XianyuSliderStealth:
                 self.last_verification_feedback = {"status": "success", "source": "login_element_detected", "message": "已检测到登录成功元素"}
                 return True
 
+            context_login_success, _ = self._probe_context_login_during_slider(self.page)
+            if context_login_success:
+                logger.info(f"【{self.pure_user_id}】✓ 上下文登录状态已确认，按验证成功处理")
+                self.last_verification_feedback = {
+                    "status": "success",
+                    "source": "context_login_confirmed",
+                    "message": "上下文登录状态已确认"
+                }
+                return True
+
             # 容器仍然存在，且没有失败提示，可能是验证失败但没有显示失败提示
             # 或者验证还在进行中，但为了不无限等待，返回失败
             logger.warning(f"【{self.pure_user_id}】滑块容器仍存在且可见，且未检测到失败提示，但验证可能失败")
@@ -4586,11 +4710,11 @@ class XianyuSliderStealth:
             logger.error(f"【{self.pure_user_id}】点击失败提示区域时出错: {e}")
             return False
     
-    def solve_slider(self, max_retries: int = 5, fast_mode: bool = False):
+    def solve_slider(self, max_retries: int = 3, fast_mode: bool = False):
         """处理滑块验证（极速模式 + 自适应策略）
 
         Args:
-            max_retries: 最大重试次数（🔧 2026-01-28: 从5改为3，减少无效重试）
+            max_retries: 最大重试次数（统一限制为3，减少无效重试）
             fast_mode: 快速查找模式（当已确认滑块存在时使用，减少等待时间）
 
         🔧 2026-01-28 优化说明：
@@ -4598,10 +4722,20 @@ class XianyuSliderStealth:
         - 增加重试间隔冷却时间，避免触发反爬机制
         - 第1次失败后等待2-3秒，第2次失败后等待3-5秒
         """
+        original_max_retries = max_retries
+        max_retries = max(1, min(int(max_retries or 3), 3))
+        if original_max_retries != max_retries:
+            logger.info(f"【{self.pure_user_id}】重试次数已收敛到 {max_retries} 次（原请求: {original_max_retries}）")
+
         failure_records = []
         current_strategy = 'ultra_fast_optimized'  # 优化后的极速策略
 
-        def finalize_slider_success(attempt_no: int, success_note: Optional[str] = None) -> bool:
+        def finalize_slider_success(
+            attempt_no: int,
+            success_note: Optional[str] = None,
+            cookie_refresh_confirmed: Optional[bool] = None,
+            soft_success: bool = False,
+        ) -> bool:
             if success_note:
                 logger.success(f"【{self.pure_user_id}】✅ {success_note}")
 
@@ -4613,6 +4747,13 @@ class XianyuSliderStealth:
             if hasattr(self, 'current_trajectory_data'):
                 used_strategy = self.current_trajectory_data.get("random_params", {}).get("strategy", "unknown")
                 adaptive_strategy_manager.record_result(used_strategy, success=True)
+                self._update_current_result_meta(
+                    "success",
+                    attempt=attempt_no,
+                    cookie_refresh_confirmed=cookie_refresh_confirmed,
+                    soft_success=soft_success,
+                    note=success_note,
+                )
 
             if self.enable_learning and hasattr(self, 'current_trajectory_data'):
                 self._save_success_record(self.current_trajectory_data)
@@ -4697,7 +4838,12 @@ class XianyuSliderStealth:
 
                     context_login_success, _ = self._probe_context_login_during_slider(self.page)
                     if context_login_success:
-                        return finalize_slider_success(attempt, "当前页面已无滑块，但上下文已确认登录")
+                        return finalize_slider_success(
+                            attempt,
+                            "当前页面已无滑块，但上下文已确认登录",
+                            cookie_refresh_confirmed=None,
+                            soft_success=False,
+                        )
 
                     logger.warning(f"【{self.pure_user_id}】当前页面已无滑块，不再继续同轮滑块重试")
                     break
@@ -4729,14 +4875,16 @@ class XianyuSliderStealth:
 
                 if verification_success:
                     # 🔑 Cookie 双重校验：页面状态通过后，轮询检查关键 Cookie 是否真正刷新
+                    cookie_refresh_confirmed: Optional[bool] = None
+                    soft_success = False
                     if cookie_baseline:
                         # 先等待稳定窗口（1.2 秒），给页面回写票据留时间
                         time.sleep(1.2)
                         cookie_refreshed = False
                         current_cookies = dict(cookie_baseline)
-                        # 以 500ms 间隔轮询 x5/关键 Cookie 变化，最长等 15 秒
+                        # 以 500ms 间隔轮询 x5/关键 Cookie 变化，最长等 10 秒
                         poll_interval = 0.5
-                        max_poll_time = 15.0
+                        max_poll_time = 10.0
                         poll_start = time.time()
                         while time.time() - poll_start < max_poll_time:
                             current_cookies = self._snapshot_context_cookies()
@@ -4755,20 +4903,50 @@ class XianyuSliderStealth:
                                 if confirmed_cookies:
                                     current_cookies = confirmed_cookies
                             else:
-                                logger.warning(f"【{self.pure_user_id}】⚠️ 页面显示验证通过，但等待{max_poll_time}秒后关键 Cookie 仍无变化，判定为假通过")
-                                if hasattr(self, 'current_trajectory_data'):
-                                    used_strategy = self.current_trajectory_data.get("random_params", {}).get("strategy", "unknown")
-                                    adaptive_strategy_manager.record_result(used_strategy, success=False)
-                                strategy_stats.record_attempt(attempt, current_strategy, success=False)
-                                if attempt < max_retries:
-                                    continue
+                                soft_success_allowed, soft_success_reason = self._should_accept_soft_success_without_cookie_refresh(
+                                    current_cookies,
+                                    self.page,
+                                )
+                                if soft_success_allowed:
+                                    logger.success(
+                                        f"【{self.pure_user_id}】✅ 页面已脱离验证态，接受软成功: {soft_success_reason}"
+                                    )
+                                    cookie_refresh_confirmed = False
+                                    soft_success = True
+                                    cookie_refreshed = True
+                                    self.last_verification_feedback = {
+                                        "status": "success",
+                                        "source": "soft_success_cookie_pending",
+                                        "message": soft_success_reason,
+                                    }
                                 else:
-                                    break
+                                    logger.warning(f"【{self.pure_user_id}】⚠️ 页面显示验证通过，但等待{max_poll_time}秒后关键 Cookie 仍无变化，判定为假通过")
+                                    if hasattr(self, 'current_trajectory_data'):
+                                        self._update_current_result_meta(
+                                            "failure",
+                                            attempt=attempt,
+                                            cookie_refresh_confirmed=False,
+                                            soft_success=False,
+                                            note="cookie_not_refreshed_after_page_success",
+                                        )
+                                        used_strategy = self.current_trajectory_data.get("random_params", {}).get("strategy", "unknown")
+                                        adaptive_strategy_manager.record_result(used_strategy, success=False)
+                                    strategy_stats.record_attempt(attempt, current_strategy, success=False)
+                                    if attempt < max_retries:
+                                        continue
+                                    else:
+                                        break
 
                         # Cookie 校验通过，更新基线
                         cookie_baseline = current_cookies
+                        if cookie_refresh_confirmed is None:
+                            cookie_refresh_confirmed = not soft_success
 
-                    return finalize_slider_success(attempt)
+                    return finalize_slider_success(
+                        attempt,
+                        cookie_refresh_confirmed=cookie_refresh_confirmed,
+                        soft_success=soft_success,
+                    )
                 else:
                     logger.warning(f"【{self.pure_user_id}】❌ 第{attempt}次验证失败")
                     
@@ -4783,6 +4961,13 @@ class XianyuSliderStealth:
                     
                     # 分析失败原因
                     if hasattr(self, 'current_trajectory_data'):
+                        self._update_current_result_meta(
+                            "failure",
+                            attempt=attempt,
+                            cookie_refresh_confirmed=False,
+                            soft_success=False,
+                            note="verification_failed",
+                        )
                         failure_info = self._analyze_failure(attempt, slide_distance, self.current_trajectory_data)
                         failure_records.append(failure_info)
                         self._save_failure_record(self.current_trajectory_data, failure_info)
@@ -5102,7 +5287,7 @@ class XianyuSliderStealth:
                                 
                                 # 检测到滑块验证，立即处理
                                 logger.warning(f"【{self.pure_user_id}】检测到滑块验证，开始自动处理...")
-                                slider_success = self.solve_slider(max_retries=5)
+                                slider_success = self.solve_slider(max_retries=3)
                                 if slider_success:
                                     logger.success(f"【{self.pure_user_id}】✅ 滑块验证成功！")
                                     time.sleep(3)  # 等待滑块验证后的状态更新
@@ -5113,7 +5298,7 @@ class XianyuSliderStealth:
                                         self.page.reload(wait_until="domcontentloaded", timeout=30000)
                                         logger.info(f"【{self.pure_user_id}】✅ 页面刷新完成")
                                         time.sleep(2)
-                                        slider_success = self.solve_slider(max_retries=5)
+                                        slider_success = self.solve_slider(max_retries=3)
                                         if not slider_success:
                                             logger.error(f"【{self.pure_user_id}】❌ 刷新后滑块验证仍然失败")
                                         else:
@@ -5925,7 +6110,7 @@ class XianyuSliderStealth:
 
                             logger.warning(f"【{self.pure_user_id}】检测到滑块验证，开始处理...")
                             time.sleep(3)
-                            slider_success = self.solve_slider(max_retries=5)
+                            slider_success = self.solve_slider(max_retries=3)
                             
                             if not slider_success:
                                 feedback = self.last_verification_feedback or {}
@@ -5939,7 +6124,7 @@ class XianyuSliderStealth:
                                     page.reload(wait_until="domcontentloaded", timeout=30000)
                                     logger.info(f"【{self.pure_user_id}】✅ 页面刷新完成")
                                     time.sleep(2)
-                                    slider_success = self.solve_slider(max_retries=5)
+                                    slider_success = self.solve_slider(max_retries=3)
                                     if not slider_success:
                                         feedback = self.last_verification_feedback or {}
                                         if feedback.get("source") == "slider_missing":
@@ -6181,7 +6366,7 @@ class XianyuSliderStealth:
                         logger.warning(f"【{self.pure_user_id}】检测到滑块验证，开始处理...")
 
                         # 【复用】直接调用 solve_slider() 方法处理滑块
-                        slider_success = self.solve_slider(max_retries=5)
+                        slider_success = self.solve_slider(max_retries=3)
 
                         if slider_success:
                             logger.success(f"【{self.pure_user_id}】✅ 滑块验证成功！")
@@ -6214,7 +6399,7 @@ class XianyuSliderStealth:
 
                     if has_slider_after_wait:
                         logger.warning(f"【{self.pure_user_id}】检测到滑块验证，开始处理...")
-                        slider_success = self.solve_slider(max_retries=5)
+                        slider_success = self.solve_slider(max_retries=3)
                         if slider_success:
                             logger.success(f"【{self.pure_user_id}】✅ 滑块验证成功！")
                             time.sleep(3)  # 等待滑块验证后的状态更新
@@ -6756,6 +6941,9 @@ class XianyuSliderStealth:
             
             # 初始化浏览器
             self.init_browser()
+
+            # 后台无头链路先做页面预热，降低冷启动直接进处罚页的风险
+            self._warmup_slider_context(url)
             
             # 导航到目标URL，快速加载
             logger.info(f"【{self.pure_user_id}】导航到URL: {url}")
