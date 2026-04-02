@@ -29,6 +29,10 @@ from collections import defaultdict
 from typing import Any, Dict, Optional, Tuple
 from db_manager import db_manager
 
+
+DELIVERY_BATCH_MAX_UNITS = 10
+DELIVERY_BATCH_MAX_CHARS = 1200
+
 # 滑块验证补丁已废弃，使用集成的 Playwright 登录方法
 # 不再需要猴子补丁，所有功能已集成到 XianyuSliderStealth 类中
 
@@ -4056,11 +4060,13 @@ class XianyuLive:
 
                     successful_send_count = 0
                     last_delivery_error = None
+                    prepared_units = []
 
                     for i in range(quantity_to_send):
+                        unit_index = i + 1
                         rule_meta = {}
                         try:
-                            pending_finalize_meta = self._get_pending_delivery_finalization_meta(order_id, i + 1)
+                            pending_finalize_meta = self._get_pending_delivery_finalization_meta(order_id, unit_index)
                             if pending_finalize_meta:
                                 finalize_result = await self._finalize_delivery_after_send(
                                     delivery_meta=pending_finalize_meta,
@@ -4068,7 +4074,7 @@ class XianyuLive:
                                     item_id=item_id
                                 )
                                 if not finalize_result.get('success'):
-                                    last_delivery_error = finalize_result.get('error') or f"第 {i+1} 个卡券补完成收尾失败"
+                                    last_delivery_error = finalize_result.get('error') or f"第 {unit_index} 个卡券补完成收尾失败"
                                     self._persist_delivery_finalization_state(
                                         order_id=order_id,
                                         item_id=item_id,
@@ -4111,8 +4117,6 @@ class XianyuLive:
                                     channel='auto',
                                     rule_meta=pending_finalize_meta
                                 )
-                                if quantity_to_send > 1 and i < quantity_to_send - 1:
-                                    await asyncio.sleep(1)
                                 continue
 
                             delivery_result = await self._auto_delivery(
@@ -4123,7 +4127,7 @@ class XianyuLive:
                                 chat_id,
                                 send_user_name,
                                 include_meta=True,
-                                delivery_unit_index=i + 1
+                                delivery_unit_index=unit_index
                             )
 
                             if isinstance(delivery_result, dict):
@@ -4153,7 +4157,7 @@ class XianyuLive:
                                 delivery_steps = []
 
                             if not delivery_content:
-                                failure_reason = delivery_error or f"第 {i+1}/{quantity_to_send} 个卡券内容获取失败"
+                                failure_reason = delivery_error or f"第 {unit_index}/{quantity_to_send} 个卡券内容获取失败"
                                 last_delivery_error = failure_reason
                                 self._record_delivery_log(
                                     order_id=order_id,
@@ -4170,41 +4174,196 @@ class XianyuLive:
 
                             if not delivery_steps:
                                 delivery_steps = self._build_delivery_steps(delivery_content, rule_meta.get('card_description', ''))
+                            if not delivery_steps:
+                                failure_reason = f"第 {unit_index}/{quantity_to_send} 个卡券发货步骤构建失败"
+                                last_delivery_error = failure_reason
+                                self._release_data_reservation_if_needed(rule_meta, error=failure_reason)
+                                self._record_delivery_log(
+                                    order_id=order_id,
+                                    item_id=item_id,
+                                    buyer_id=send_user_id,
+                                    buyer_nick=send_user_name,
+                                    status='failed',
+                                    reason=failure_reason,
+                                    channel='auto',
+                                    rule_meta=rule_meta
+                                )
+                                logger.error(failure_reason)
+                                continue
 
+                            prepared_units.append({
+                                'unit_index': unit_index,
+                                'delivery_steps': delivery_steps,
+                                'rule_meta': rule_meta,
+                                'card_type': rule_meta.get('card_type'),
+                            })
+
+                        except Exception as e:
+                            self._release_data_reservation_if_needed(rule_meta, error=f'准备发货失败: {self._safe_str(e)}')
+                            last_delivery_error = f"准备第 {unit_index}/{quantity_to_send} 个卡券失败: {self._safe_str(e)}"
+                            self._record_delivery_log(
+                                order_id=order_id,
+                                item_id=item_id,
+                                buyer_id=send_user_id,
+                                buyer_nick=send_user_name,
+                                status='failed',
+                                reason=last_delivery_error,
+                                channel='auto',
+                                rule_meta=rule_meta
+                            )
+                            logger.error(last_delivery_error)
+
+                    send_groups = self._build_delivery_send_groups(prepared_units, quantity_to_send)
+                    total_send_groups = len(send_groups)
+
+                    for group_index, send_group in enumerate(send_groups, start=1):
+                        group_units = send_group.get('units') or []
+                        if not group_units:
+                            continue
+
+                        first_unit = group_units[0]
+                        single_unit_index = first_unit.get('unit_index') or 1
+                        is_batched_text_group = send_group.get('mode') == 'batched_text'
+
+                        if is_batched_text_group:
+                            group_log_prefix = (
+                                f'[{msg_time}] 多数量自动发货批次 {group_index}/{total_send_groups} '
+                                f'({len(group_units)}个单元, {send_group.get("char_count", 0)}字)'
+                            )
+                        else:
+                            group_log_prefix = f'[{msg_time}] 多数量自动发货 {single_unit_index}/{quantity_to_send}'
+
+                        try:
                             await self._send_delivery_steps(
                                 websocket,
                                 chat_id,
                                 send_user_id,
-                                delivery_steps,
+                                send_group.get('delivery_steps') or [],
                                 user_url=user_url,
-                                log_prefix=f'[{msg_time}] 多数量自动发货 {i+1}/{quantity_to_send}'
+                                log_prefix=group_log_prefix
                             )
+                        except Exception as e:
+                            group_error = self._safe_str(e)
+                            for prepared_unit in group_units:
+                                unit_rule_meta = prepared_unit.get('rule_meta') or {}
+                                unit_index = prepared_unit.get('unit_index') or 1
+                                self._release_data_reservation_if_needed(
+                                    unit_rule_meta,
+                                    error=f'发送失败(unit={unit_index}): {group_error}'
+                                )
+                                last_delivery_error = f"发送第 {unit_index}/{quantity_to_send} 个卡券失败: {group_error}"
+                                self._record_delivery_log(
+                                    order_id=order_id,
+                                    item_id=item_id,
+                                    buyer_id=send_user_id,
+                                    buyer_nick=send_user_name,
+                                    status='failed',
+                                    reason=last_delivery_error,
+                                    channel='auto',
+                                    rule_meta=unit_rule_meta
+                                )
+                                logger.error(last_delivery_error)
+                            continue
 
-                            if not self._mark_data_reservation_sent_if_needed(rule_meta):
-                                self._release_data_reservation_if_needed(rule_meta, error='发送成功后标记预占已发送失败')
-                                raise Exception('批量数据预占标记已发送失败')
+                        for prepared_unit in group_units:
+                            unit_rule_meta = prepared_unit.get('rule_meta') or {}
+                            unit_index = prepared_unit.get('unit_index') or 1
+                            unit_delivery_steps = prepared_unit.get('delivery_steps') or []
 
-                            self._persist_delivery_finalization_state(
-                                order_id=order_id,
-                                item_id=item_id,
-                                buyer_id=send_user_id,
-                                delivery_meta=rule_meta,
-                                channel='auto',
-                                status='sent'
-                            )
+                            try:
+                                if not self._mark_data_reservation_sent_if_needed(unit_rule_meta):
+                                    self._release_data_reservation_if_needed(
+                                        unit_rule_meta,
+                                        error=f'发送成功后标记预占已发送失败(unit={unit_index})'
+                                    )
+                                    last_delivery_error = f'第 {unit_index} 个卡券发送成功后标记预占已发送失败'
+                                    self._record_delivery_log(
+                                        order_id=order_id,
+                                        item_id=item_id,
+                                        buyer_id=send_user_id,
+                                        buyer_nick=send_user_name,
+                                        status='failed',
+                                        reason=last_delivery_error,
+                                        channel='auto',
+                                        rule_meta=unit_rule_meta
+                                    )
+                                    logger.error(last_delivery_error)
+                                    continue
 
-                            finalize_result = await self._finalize_delivery_after_send(
-                                delivery_meta=rule_meta,
-                                order_id=order_id,
-                                item_id=item_id
-                            )
-                            if not finalize_result.get('success'):
-                                last_delivery_error = finalize_result.get('error') or f"第 {i+1} 条消息发送成功但提交发货副作用失败"
                                 self._persist_delivery_finalization_state(
                                     order_id=order_id,
                                     item_id=item_id,
                                     buyer_id=send_user_id,
-                                    delivery_meta=rule_meta,
+                                    delivery_meta=unit_rule_meta,
+                                    channel='auto',
+                                    status='sent'
+                                )
+
+                                finalize_result = await self._finalize_delivery_after_send(
+                                    delivery_meta=unit_rule_meta,
+                                    order_id=order_id,
+                                    item_id=item_id
+                                )
+                                if not finalize_result.get('success'):
+                                    last_delivery_error = finalize_result.get('error') or f"第 {unit_index} 条消息发送成功但提交发货副作用失败"
+                                    self._persist_delivery_finalization_state(
+                                        order_id=order_id,
+                                        item_id=item_id,
+                                        buyer_id=send_user_id,
+                                        delivery_meta=unit_rule_meta,
+                                        channel='auto',
+                                        status='sent',
+                                        last_error=last_delivery_error
+                                    )
+                                    self._record_delivery_log(
+                                        order_id=order_id,
+                                        item_id=item_id,
+                                        buyer_id=send_user_id,
+                                        buyer_nick=send_user_name,
+                                        status='failed',
+                                        reason=last_delivery_error,
+                                        channel='auto',
+                                        rule_meta=unit_rule_meta
+                                    )
+                                    logger.error(last_delivery_error)
+                                    continue
+
+                                self._persist_delivery_finalization_state(
+                                    order_id=order_id,
+                                    item_id=item_id,
+                                    buyer_id=send_user_id,
+                                    delivery_meta=unit_rule_meta,
+                                    channel='auto',
+                                    status='finalized'
+                                )
+
+                                successful_send_count += 1
+
+                                has_image_step = any(step.get('type') == 'image' for step in unit_delivery_steps)
+                                if has_image_step:
+                                    success_reason = '自动发货图片步骤发送成功'
+                                elif is_batched_text_group and len(group_units) > 1:
+                                    success_reason = '自动发货文本批量合并发送成功'
+                                else:
+                                    success_reason = '自动发货文本发送成功'
+
+                                self._record_delivery_log(
+                                    order_id=order_id,
+                                    item_id=item_id,
+                                    buyer_id=send_user_id,
+                                    buyer_nick=send_user_name,
+                                    status='success',
+                                    reason=success_reason,
+                                    channel='auto',
+                                    rule_meta=unit_rule_meta
+                                )
+                            except Exception as unit_post_error:
+                                last_delivery_error = f"第 {unit_index} 个卡券消息已发送，但发送后处理异常: {self._safe_str(unit_post_error)}"
+                                self._persist_delivery_finalization_state(
+                                    order_id=order_id,
+                                    item_id=item_id,
+                                    buyer_id=send_user_id,
+                                    delivery_meta=unit_rule_meta,
                                     channel='auto',
                                     status='sent',
                                     last_error=last_delivery_error
@@ -4217,52 +4376,12 @@ class XianyuLive:
                                     status='failed',
                                     reason=last_delivery_error,
                                     channel='auto',
-                                    rule_meta=rule_meta
+                                    rule_meta=unit_rule_meta
                                 )
                                 logger.error(last_delivery_error)
-                                continue
 
-                            self._persist_delivery_finalization_state(
-                                order_id=order_id,
-                                item_id=item_id,
-                                buyer_id=send_user_id,
-                                delivery_meta=rule_meta,
-                                channel='auto',
-                                status='finalized'
-                            )
-
-                            successful_send_count += 1
-
-                            has_image_step = any(step.get('type') == 'image' for step in delivery_steps)
-                            success_reason = '自动发货图片步骤发送成功' if has_image_step else '自动发货文本发送成功'
-                            self._record_delivery_log(
-                                order_id=order_id,
-                                item_id=item_id,
-                                buyer_id=send_user_id,
-                                buyer_nick=send_user_name,
-                                status='success',
-                                reason=success_reason,
-                                channel='auto',
-                                rule_meta=rule_meta
-                            )
-
-                            if quantity_to_send > 1 and i < quantity_to_send - 1:
-                                await asyncio.sleep(1)
-
-                        except Exception as e:
-                            self._release_data_reservation_if_needed(rule_meta, error=f'发送失败: {self._safe_str(e)}')
-                            last_delivery_error = f"发送第 {i+1}/{quantity_to_send} 个卡券失败: {self._safe_str(e)}"
-                            self._record_delivery_log(
-                                order_id=order_id,
-                                item_id=item_id,
-                                buyer_id=send_user_id,
-                                buyer_nick=send_user_name,
-                                status='failed',
-                                reason=last_delivery_error,
-                                channel='auto',
-                                rule_meta=rule_meta
-                            )
-                            logger.error(last_delivery_error)
+                        if total_send_groups > 1 and group_index < total_send_groups:
+                            await asyncio.sleep(1)
 
                     progress_summary = self._sync_order_delivery_progress(
                         order_id=order_id,
@@ -9087,6 +9206,141 @@ Cookie数量: {cookie_count}
             if fallback_content:
                 return [{'type': 'image' if fallback_content.startswith("__IMAGE_SEND__") else 'text', 'content': fallback_content}]
             return []
+
+    def _can_batch_text_delivery(self, delivery_steps, card_type: str = None) -> bool:
+        """仅将 text/data 的单条纯文本步骤纳入批量合并发送。"""
+        normalized_card_type = str(card_type or '').strip().lower()
+        if normalized_card_type not in {'text', 'data'}:
+            return False
+
+        steps = delivery_steps or []
+        if len(steps) != 1:
+            return False
+
+        step = steps[0] or {}
+        if step.get('type') != 'text':
+            return False
+
+        return bool((step.get('content') or '').strip())
+
+    def _format_delivery_unit_text(self, text: str, unit_index: int, total_units: int) -> str:
+        """为批量发货文本添加全局连续序号。"""
+        safe_total_units = max(1, int(total_units or 1))
+        safe_unit_index = max(1, int(unit_index or 1))
+        prefix = f"【{safe_unit_index}/{safe_total_units}】"
+        content = (text or '').strip()
+        return f"{prefix}{content}" if content else prefix
+
+    def _apply_delivery_unit_numbering(self, delivery_steps, unit_index: int, total_units: int, card_type: str = None):
+        """为多数量订单中的 text/data 步骤补充序号。"""
+        if max(1, int(total_units or 1)) <= 1:
+            return delivery_steps or []
+
+        normalized_card_type = str(card_type or '').strip().lower()
+        if normalized_card_type not in {'text', 'data'}:
+            return delivery_steps or []
+
+        steps = [dict(step or {}) for step in (delivery_steps or [])]
+        prefix = f"【{max(1, int(unit_index or 1))}/{max(1, int(total_units or 1))}】"
+
+        for step in steps:
+            if step.get('type') == 'text':
+                step['content'] = f"{prefix}{(step.get('content') or '').strip()}"
+                return steps
+
+        return [{'type': 'text', 'content': prefix}] + steps
+
+    def _build_delivery_send_groups(self, prepared_units, total_units: int,
+                                    max_units_per_message: int = DELIVERY_BATCH_MAX_UNITS,
+                                    max_chars_per_message: int = DELIVERY_BATCH_MAX_CHARS):
+        """按数量和字符数双阈值生成发货发送批次。"""
+        if max(1, int(total_units or 1)) <= 1:
+            return [{
+                'mode': 'single',
+                'units': [prepared_unit],
+                'delivery_steps': prepared_unit.get('delivery_steps') or [],
+                'unit_count': 1,
+                'char_count': 0,
+            } for prepared_unit in sorted(prepared_units or [], key=lambda unit: int(unit.get('unit_index') or 0))]
+
+        groups = []
+        current_batch_units = []
+        current_batch_chars = 0
+
+        def flush_current_batch():
+            nonlocal current_batch_units, current_batch_chars
+            if not current_batch_units:
+                return
+
+            batched_text = '\n\n'.join(unit['batched_text'] for unit in current_batch_units)
+            groups.append({
+                'mode': 'batched_text',
+                'units': list(current_batch_units),
+                'delivery_steps': [{'type': 'text', 'content': batched_text}],
+                'unit_count': len(current_batch_units),
+                'char_count': len(batched_text),
+            })
+            current_batch_units = []
+            current_batch_chars = 0
+
+        for prepared_unit in sorted(prepared_units or [], key=lambda unit: int(unit.get('unit_index') or 0)):
+            delivery_steps = prepared_unit.get('delivery_steps') or []
+            rule_meta = prepared_unit.get('rule_meta') or {}
+            card_type = prepared_unit.get('card_type') or rule_meta.get('card_type')
+
+            if not self._can_batch_text_delivery(delivery_steps, card_type):
+                flush_current_batch()
+                numbered_steps = self._apply_delivery_unit_numbering(
+                    delivery_steps,
+                    prepared_unit.get('unit_index') or 1,
+                    total_units,
+                    card_type,
+                )
+                groups.append({
+                    'mode': 'single',
+                    'units': [prepared_unit],
+                    'delivery_steps': numbered_steps,
+                    'unit_count': 1,
+                    'char_count': 0,
+                })
+                continue
+
+            numbered_text = self._format_delivery_unit_text(
+                delivery_steps[0].get('content') or '',
+                prepared_unit.get('unit_index') or 1,
+                total_units,
+            )
+
+            if len(numbered_text) > max_chars_per_message:
+                flush_current_batch()
+                logger.warning(
+                    f"【{self.cookie_id}】发货单元 {prepared_unit.get('unit_index')} 文本长度 {len(numbered_text)} 超过批量阈值 {max_chars_per_message}，回退为单条发送"
+                )
+                groups.append({
+                    'mode': 'single',
+                    'units': [prepared_unit],
+                    'delivery_steps': [{'type': 'text', 'content': numbered_text}],
+                    'unit_count': 1,
+                    'char_count': len(numbered_text),
+                })
+                continue
+
+            separator_chars = 2 if current_batch_units else 0
+            exceeds_unit_limit = len(current_batch_units) >= max_units_per_message
+            exceeds_char_limit = current_batch_units and (
+                current_batch_chars + separator_chars + len(numbered_text) > max_chars_per_message
+            )
+
+            if exceeds_unit_limit or exceeds_char_limit:
+                flush_current_batch()
+
+            prepared_unit_with_text = dict(prepared_unit)
+            prepared_unit_with_text['batched_text'] = numbered_text
+            current_batch_units.append(prepared_unit_with_text)
+            current_batch_chars += (2 if len(current_batch_units) > 1 else 0) + len(numbered_text)
+
+        flush_current_batch()
+        return groups
 
     async def _send_delivery_steps(self, websocket, chat_id: str, user_id: str, delivery_steps, user_url: str = None,
                                    log_prefix: str = "自动发货", card_id: int = None):

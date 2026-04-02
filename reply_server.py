@@ -8571,6 +8571,7 @@ async def manual_deliver_order(order_id: str, current_user: Dict[str, Any] = Dep
             return {"success": True, "delivered": True, "message": "订单当前没有可补发的未完成单元"}
 
         unit_results = []
+        prepared_units = []
 
         def format_delivery_reason(reason: str, order_spec_mode: str = None, rule_spec_mode: str = None, item_config_mode: str = None) -> str:
             context_parts = []
@@ -8637,126 +8638,11 @@ async def manual_deliver_order(order_id: str, current_user: Dict[str, Any] = Dep
             if delivery_success:
                 if not delivery_steps:
                     delivery_steps = xianyu_instance._build_delivery_steps(delivery_content, '')
-
-                try:
-                    ws = getattr(xianyu_instance, 'ws', None)
-                    if ws:
-                        sid = order.get('sid', '')
-                        if sid:
-                            cid = sid.replace('@goofish', '')
-                            log_with_user('info', f"手动发货: 使用现有WebSocket连接发送, cid={cid}, buyer_id={buyer_id}, unit={unit_index}", current_user)
-                            await xianyu_instance._send_delivery_steps(
-                                ws,
-                                cid,
-                                buyer_id,
-                                delivery_steps,
-                                log_prefix=f"手动发货 order_id={order_id} unit={unit_index}"
-                            )
-                        else:
-                            log_with_user('warning', f"手动发货: 订单无sid，尝试使用buyer_id作为cid, unit={unit_index}", current_user)
-                            await xianyu_instance._send_delivery_steps(
-                                ws,
-                                buyer_id,
-                                buyer_id,
-                                delivery_steps,
-                                log_prefix=f"手动发货 order_id={order_id} unit={unit_index}"
-                            )
-                    else:
-                        log_with_user('warning', f"手动发货: 无现有WebSocket连接，使用send_delivery_steps_once, unit={unit_index}", current_user)
-                        await xianyu_instance.send_delivery_steps_once(buyer_id, item_id, delivery_steps)
-
-                    if not xianyu_instance._mark_data_reservation_sent_if_needed({
-                        'data_reservation_id': data_reservation_id,
-                        'data_reservation_status': data_reservation_status
-                    }):
-                        xianyu_instance._release_data_reservation_if_needed(
-                            {'data_reservation_id': data_reservation_id},
-                            error=f'手动发货发送成功后标记预占已发送失败(unit={unit_index})'
-                        )
-                        unit_results.append({'unit_index': unit_index, 'status': 'failed', 'error': '批量数据预占标记已发送失败'})
-                        continue
-
-                    delivery_meta = {
-                        'success': True,
-                        'rule_id': rule_id,
-                        'card_id': card_id,
-                        'card_type': card_type,
-                        'data_card_pending_consume': data_card_pending_consume,
-                        'data_line': data_line,
-                        'data_reservation_id': data_reservation_id,
-                        'data_reservation_status': data_reservation_status,
-                        'delivery_unit_index': unit_index,
-                    }
-                    xianyu_instance._persist_delivery_finalization_state(
-                        order_id=order_id,
-                        item_id=item_id,
-                        buyer_id=buyer_id,
-                        delivery_meta=delivery_meta,
-                        channel='manual',
-                        status='sent'
-                    )
-
-                    finalize_result = await xianyu_instance._finalize_delivery_after_send(
-                        delivery_meta=delivery_meta,
-                        order_id=order_id,
-                        item_id=item_id
-                    )
-                    if not finalize_result.get('success'):
-                        xianyu_instance._persist_delivery_finalization_state(
-                            order_id=order_id,
-                            item_id=item_id,
-                            buyer_id=buyer_id,
-                            delivery_meta=delivery_meta,
-                            channel='manual',
-                            status='sent',
-                            last_error=finalize_result.get('error') or f'第 {unit_index} 个发货单元发送成功但提交发货副作用失败'
-                        )
-                        db_manager.create_delivery_log(
-                            user_id=user_id,
-                            cookie_id=cookie_id,
-                            order_id=order_id,
-                            item_id=item_id,
-                            buyer_id=buyer_id,
-                            buyer_nick=order.get('buyer_nick'),
-                            rule_id=rule_id,
-                            rule_keyword=rule_keyword,
-                            card_type=card_type,
-                            match_mode=match_mode,
-                            channel='manual',
-                            status='failed',
-                            reason=format_delivery_reason(finalize_result.get('error') or f'第 {unit_index} 个发货单元发送成功但提交发货副作用失败', order_spec_mode, rule_spec_mode, item_config_mode)
-                        )
-                        unit_results.append({'unit_index': unit_index, 'status': 'pending_finalize', 'error': finalize_result.get('error') or '发送成功但提交发货副作用失败'})
-                        continue
-
-                    xianyu_instance._persist_delivery_finalization_state(
-                        order_id=order_id,
-                        item_id=item_id,
-                        buyer_id=buyer_id,
-                        delivery_meta=delivery_meta,
-                        channel='manual',
-                        status='finalized'
-                    )
-                    db_manager.create_delivery_log(
-                        user_id=user_id,
-                        cookie_id=cookie_id,
-                        order_id=order_id,
-                        item_id=item_id,
-                        buyer_id=buyer_id,
-                        buyer_nick=order.get('buyer_nick'),
-                        rule_id=rule_id,
-                        rule_keyword=rule_keyword,
-                        card_type=card_type,
-                        match_mode=match_mode,
-                        channel='manual',
-                        status='success',
-                        reason=format_delivery_reason(f'手动发货第 {unit_index} 个单元发送成功', order_spec_mode, rule_spec_mode, item_config_mode)
-                    )
-                    unit_results.append({'unit_index': unit_index, 'status': 'finalized'})
-                except Exception as send_error:
+                if not delivery_steps:
+                    fail_reason = f"第 {unit_index} 个发货单元发货步骤构建失败"
                     xianyu_instance._release_data_reservation_if_needed(
                         {'data_reservation_id': data_reservation_id},
-                        error=f"手动发货发送失败(unit={unit_index}): {str(send_error)}"
+                        error=fail_reason
                     )
                     db_manager.create_delivery_log(
                         user_id=user_id,
@@ -8771,9 +8657,32 @@ async def manual_deliver_order(order_id: str, current_user: Dict[str, Any] = Dep
                         match_mode=match_mode,
                         channel='manual',
                         status='failed',
-                        reason=format_delivery_reason(f"第 {unit_index} 个发货单元消息发送失败: {str(send_error)}", order_spec_mode, rule_spec_mode, item_config_mode)
+                        reason=format_delivery_reason(fail_reason, order_spec_mode, rule_spec_mode, item_config_mode)
                     )
-                    unit_results.append({'unit_index': unit_index, 'status': 'failed', 'error': str(send_error)})
+                    unit_results.append({'unit_index': unit_index, 'status': 'failed', 'error': fail_reason})
+                    continue
+
+                prepared_units.append({
+                    'unit_index': unit_index,
+                    'delivery_steps': delivery_steps,
+                    'card_type': card_type,
+                    'rule_meta': {
+                        'success': True,
+                        'rule_id': rule_id,
+                        'rule_keyword': rule_keyword,
+                        'card_id': card_id,
+                        'card_type': card_type,
+                        'match_mode': match_mode,
+                        'order_spec_mode': order_spec_mode,
+                        'rule_spec_mode': rule_spec_mode,
+                        'item_config_mode': item_config_mode,
+                        'data_card_pending_consume': data_card_pending_consume,
+                        'data_line': data_line,
+                        'data_reservation_id': data_reservation_id,
+                        'data_reservation_status': data_reservation_status,
+                        'delivery_unit_index': unit_index,
+                    }
+                })
             else:
                 fail_reason = failure_reason or f"第 {unit_index} 个发货单元未匹配到发货规则，请检查卡券和发货规则配置"
                 db_manager.create_delivery_log(
@@ -8792,6 +8701,198 @@ async def manual_deliver_order(order_id: str, current_user: Dict[str, Any] = Dep
                     reason=format_delivery_reason(fail_reason, order_spec_mode, rule_spec_mode, item_config_mode)
                 )
                 unit_results.append({'unit_index': unit_index, 'status': 'failed', 'error': fail_reason})
+
+        ws = getattr(xianyu_instance, 'ws', None)
+        manual_chat_id = buyer_id
+        if ws:
+            sid = order.get('sid', '')
+            if sid:
+                manual_chat_id = sid.replace('@goofish', '')
+                log_with_user('info', f"手动发货: 使用现有WebSocket连接发送, cid={manual_chat_id}, buyer_id={buyer_id}", current_user)
+            else:
+                log_with_user('warning', f"手动发货: 订单无sid，尝试使用buyer_id作为cid, buyer_id={buyer_id}", current_user)
+        else:
+            log_with_user('warning', f"手动发货: 无现有WebSocket连接，使用send_delivery_steps_once, buyer_id={buyer_id}", current_user)
+
+        send_groups = xianyu_instance._build_delivery_send_groups(prepared_units, expected_quantity)
+        total_send_groups = len(send_groups)
+
+        for group_index, send_group in enumerate(send_groups, start=1):
+            group_units = send_group.get('units') or []
+            if not group_units:
+                continue
+
+            first_unit = group_units[0]
+            first_unit_index = first_unit.get('unit_index') or 1
+            is_batched_text_group = send_group.get('mode') == 'batched_text'
+
+            try:
+                if ws:
+                    await xianyu_instance._send_delivery_steps(
+                        ws,
+                        manual_chat_id,
+                        buyer_id,
+                        send_group.get('delivery_steps') or [],
+                        log_prefix=(
+                            f"手动发货 order_id={order_id} batch={group_index}/{total_send_groups}"
+                            if is_batched_text_group else
+                            f"手动发货 order_id={order_id} unit={first_unit_index}"
+                        )
+                    )
+                else:
+                    await xianyu_instance.send_delivery_steps_once(buyer_id, item_id, send_group.get('delivery_steps') or [])
+            except Exception as send_error:
+                send_error_text = str(send_error)
+                for prepared_unit in group_units:
+                    unit_index = prepared_unit.get('unit_index') or 1
+                    rule_meta = prepared_unit.get('rule_meta') or {}
+                    xianyu_instance._release_data_reservation_if_needed(
+                        rule_meta,
+                        error=f"手动发货发送失败(unit={unit_index}): {send_error_text}"
+                    )
+                    db_manager.create_delivery_log(
+                        user_id=user_id,
+                        cookie_id=cookie_id,
+                        order_id=order_id,
+                        item_id=item_id,
+                        buyer_id=buyer_id,
+                        buyer_nick=order.get('buyer_nick'),
+                        rule_id=rule_meta.get('rule_id'),
+                        rule_keyword=rule_meta.get('rule_keyword'),
+                        card_type=rule_meta.get('card_type'),
+                        match_mode=rule_meta.get('match_mode'),
+                        channel='manual',
+                        status='failed',
+                        reason=format_delivery_reason(f"第 {unit_index} 个发货单元消息发送失败: {send_error_text}", rule_meta.get('order_spec_mode'), rule_meta.get('rule_spec_mode'), rule_meta.get('item_config_mode'))
+                    )
+                    unit_results.append({'unit_index': unit_index, 'status': 'failed', 'error': send_error_text})
+                continue
+
+            for prepared_unit in group_units:
+                unit_index = prepared_unit.get('unit_index') or 1
+                rule_meta = prepared_unit.get('rule_meta') or {}
+
+                try:
+                    if not xianyu_instance._mark_data_reservation_sent_if_needed(rule_meta):
+                        xianyu_instance._release_data_reservation_if_needed(
+                            rule_meta,
+                            error=f'手动发货发送成功后标记预占已发送失败(unit={unit_index})'
+                        )
+                        db_manager.create_delivery_log(
+                            user_id=user_id,
+                            cookie_id=cookie_id,
+                            order_id=order_id,
+                            item_id=item_id,
+                            buyer_id=buyer_id,
+                            buyer_nick=order.get('buyer_nick'),
+                            rule_id=rule_meta.get('rule_id'),
+                            rule_keyword=rule_meta.get('rule_keyword'),
+                            card_type=rule_meta.get('card_type'),
+                            match_mode=rule_meta.get('match_mode'),
+                            channel='manual',
+                            status='failed',
+                            reason=format_delivery_reason('批量数据预占标记已发送失败', rule_meta.get('order_spec_mode'), rule_meta.get('rule_spec_mode'), rule_meta.get('item_config_mode'))
+                        )
+                        unit_results.append({'unit_index': unit_index, 'status': 'failed', 'error': '批量数据预占标记已发送失败'})
+                        continue
+
+                    xianyu_instance._persist_delivery_finalization_state(
+                        order_id=order_id,
+                        item_id=item_id,
+                        buyer_id=buyer_id,
+                        delivery_meta=rule_meta,
+                        channel='manual',
+                        status='sent'
+                    )
+
+                    finalize_result = await xianyu_instance._finalize_delivery_after_send(
+                        delivery_meta=rule_meta,
+                        order_id=order_id,
+                        item_id=item_id
+                    )
+                    if not finalize_result.get('success'):
+                        xianyu_instance._persist_delivery_finalization_state(
+                            order_id=order_id,
+                            item_id=item_id,
+                            buyer_id=buyer_id,
+                            delivery_meta=rule_meta,
+                            channel='manual',
+                            status='sent',
+                            last_error=finalize_result.get('error') or f'第 {unit_index} 个发货单元发送成功但提交发货副作用失败'
+                        )
+                        db_manager.create_delivery_log(
+                            user_id=user_id,
+                            cookie_id=cookie_id,
+                            order_id=order_id,
+                            item_id=item_id,
+                            buyer_id=buyer_id,
+                            buyer_nick=order.get('buyer_nick'),
+                            rule_id=rule_meta.get('rule_id'),
+                            rule_keyword=rule_meta.get('rule_keyword'),
+                            card_type=rule_meta.get('card_type'),
+                            match_mode=rule_meta.get('match_mode'),
+                            channel='manual',
+                            status='failed',
+                            reason=format_delivery_reason(finalize_result.get('error') or f'第 {unit_index} 个发货单元发送成功但提交发货副作用失败', rule_meta.get('order_spec_mode'), rule_meta.get('rule_spec_mode'), rule_meta.get('item_config_mode'))
+                        )
+                        unit_results.append({'unit_index': unit_index, 'status': 'pending_finalize', 'error': finalize_result.get('error') or '发送成功但提交发货副作用失败'})
+                        continue
+
+                    xianyu_instance._persist_delivery_finalization_state(
+                        order_id=order_id,
+                        item_id=item_id,
+                        buyer_id=buyer_id,
+                        delivery_meta=rule_meta,
+                        channel='manual',
+                        status='finalized'
+                    )
+                    success_reason = f'手动发货第 {unit_index} 个单元发送成功'
+                    if is_batched_text_group and len(group_units) > 1:
+                        success_reason += '（批量合并发送）'
+                    db_manager.create_delivery_log(
+                        user_id=user_id,
+                        cookie_id=cookie_id,
+                        order_id=order_id,
+                        item_id=item_id,
+                        buyer_id=buyer_id,
+                        buyer_nick=order.get('buyer_nick'),
+                        rule_id=rule_meta.get('rule_id'),
+                        rule_keyword=rule_meta.get('rule_keyword'),
+                        card_type=rule_meta.get('card_type'),
+                        match_mode=rule_meta.get('match_mode'),
+                        channel='manual',
+                        status='success',
+                        reason=format_delivery_reason(success_reason, rule_meta.get('order_spec_mode'), rule_meta.get('rule_spec_mode'), rule_meta.get('item_config_mode'))
+                    )
+                    unit_results.append({'unit_index': unit_index, 'status': 'finalized'})
+
+                except Exception as unit_post_error:
+                    unit_error_text = str(unit_post_error)
+                    xianyu_instance._persist_delivery_finalization_state(
+                        order_id=order_id,
+                        item_id=item_id,
+                        buyer_id=buyer_id,
+                        delivery_meta=rule_meta,
+                        channel='manual',
+                        status='sent',
+                        last_error=f'第 {unit_index} 个发货单元消息已发送，但发送后处理异常: {unit_error_text}'
+                    )
+                    db_manager.create_delivery_log(
+                        user_id=user_id,
+                        cookie_id=cookie_id,
+                        order_id=order_id,
+                        item_id=item_id,
+                        buyer_id=buyer_id,
+                        buyer_nick=order.get('buyer_nick'),
+                        rule_id=rule_meta.get('rule_id'),
+                        rule_keyword=rule_meta.get('rule_keyword'),
+                        card_type=rule_meta.get('card_type'),
+                        match_mode=rule_meta.get('match_mode'),
+                        channel='manual',
+                        status='failed',
+                        reason=format_delivery_reason(f"第 {unit_index} 个发货单元消息已发送，但发送后处理异常: {unit_error_text}", rule_meta.get('order_spec_mode'), rule_meta.get('rule_spec_mode'), rule_meta.get('item_config_mode'))
+                    )
+                    unit_results.append({'unit_index': unit_index, 'status': 'pending_finalize', 'error': unit_error_text})
 
         progress_summary_after = xianyu_instance._sync_order_delivery_progress(
             order_id=order_id,
