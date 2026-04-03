@@ -15859,7 +15859,7 @@ function exportSearchResults() {
 
 
 // 默认版本号（当无法读取 version.txt 时使用）
-const DEFAULT_VERSION = 'v1.8.0';
+const DEFAULT_VERSION = 'v1.8.1';
 
 // 当前本地版本号（动态从 version.txt 读取）
 let LOCAL_VERSION = DEFAULT_VERSION;
@@ -15970,9 +15970,21 @@ function clearIgnoredUpdateVersion(showFeedback = true) {
 
 // 本地版本历史（远程服务禁用时使用）
 const LOCAL_VERSION_HISTORY = {
-    version: 'v1.8.0',
+    version: 'v1.8.1',
     intro: '本系统仅供个人学习研究使用，请勿用于商业用途。如有问题或建议，欢迎反馈。',
     versionHistory: [
+        {
+            version: 'v1.8.1',
+            date: '2026-04-03',
+            updates: [
+                '【修复】滑块恢复与令牌刷新链路更稳定，滑块成功后会及时回写有效会话 Cookie，并保护关键会话字段不被不完整快照覆盖',
+                '【修复】手动刷新后的任务交接与初始化鉴权恢复，新增 Token 预检、交接恢复窗口、恢复锁和鉴权失败冷静期，减少 WebSocket 已连通但因 Token 获取失败反复重试',
+                '【修复】统一通知派发路径并收口验证通知，修正推送冷却、人脸验证通知类型/文案/模板渲染，以及定时刷新误报',
+                '【优化】账密登录与手动刷新流程里的滑块验证也会写入风控日志和滑块统计，风控排查口径更完整',
+                '【修复】取消订单后的系统卡片不再覆盖真实 buyer_id，避免订单买家信息被异常值污染',
+                '【优化】多数量纯文本卡券消息支持批量合并发送，减少重复刷屏，卡券发货提示更简洁'
+            ]
+        },
         {
             version: 'v1.8.0',
             date: '2026-04-01',
