@@ -294,6 +294,7 @@ build/
 !README.md
 !CHANGELOG.md
 !CONTRIBUTING.md
+!SECURITY.md
 !LICENSE.md
 !docs/*.md
 
