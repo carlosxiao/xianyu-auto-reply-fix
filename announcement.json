@@ -1,6 +1,17 @@
 {
   "announcements": [
     {
+      "id": "2026-04-08-issue-feedback",
+      "enabled": true,
+      "level": "info",
+      "title": "问题反馈",
+      "message": "如有问题请 issue 反馈",
+      "dismissible": false,
+      "published_at": "2026-04-08T11:00:00+08:00",
+      "start_at": "2026-04-08T11:00:00+08:00",
+      "end_at": ""
+    },
+    {
       "id": "2026-04-08-dashboard-announcement",
       "enabled": true,
       "level": "info",
@@ -9,7 +20,7 @@
       "dismissible": true,
       "published_at": "2026-04-08T10:30:00+08:00",
       "start_at": "2026-04-08T10:30:00+08:00",
-      "end_at": ""
+      "end_at": "2026-04-08T10:59:59+08:00"
     },
     {
       "id": "2026-04-07-dashboard-history-test",
