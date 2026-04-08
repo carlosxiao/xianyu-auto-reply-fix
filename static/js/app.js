@@ -367,6 +367,65 @@ function renderDashboardAccountMetric(label, value, tone = 'off') {
     `;
 }
 
+function renderDashboardAccountRuntimeSnapshot(runtimeStatus) {
+    const normalizedRuntimeStatus = runtimeStatus || {};
+    const connectionState = normalizedRuntimeStatus.connection_state || 'not_running';
+    const keepaliveDisplayStatus = normalizedRuntimeStatus.session_keepalive_display_status || normalizedRuntimeStatus.session_keepalive_status || '';
+    const tokenStatus = normalizedRuntimeStatus.token_refresh_status || '';
+
+    const connectionText = getAboutStatusText('connection', connectionState) || '未运行';
+    const connectionTone = getAboutStatusVariant('connection', connectionState);
+    const keepaliveText = keepaliveDisplayStatus
+        ? (getAboutStatusText('keepalive', keepaliveDisplayStatus) || keepaliveDisplayStatus)
+        : (normalizedRuntimeStatus.running ? '未执行' : '未运行');
+    const keepaliveTone = keepaliveDisplayStatus
+        ? getAboutStatusVariant('keepalive', keepaliveDisplayStatus)
+        : 'secondary';
+    const tokenText = tokenStatus
+        ? (getAboutStatusText('token', tokenStatus) || tokenStatus)
+        : (normalizedRuntimeStatus.running ? '未刷新' : '未运行');
+    const tokenTone = tokenStatus
+        ? getAboutStatusVariant('token', tokenStatus)
+        : 'secondary';
+    const runningHealthy = Boolean(
+        normalizedRuntimeStatus.running
+        && normalizedRuntimeStatus.ws_ready
+        && normalizedRuntimeStatus.session_ready
+        && normalizedRuntimeStatus.has_current_token
+    );
+    const summaryText = !normalizedRuntimeStatus.running
+        ? '未运行'
+        : (runningHealthy ? '运行正常' : '部分异常');
+    const summaryTone = !normalizedRuntimeStatus.running
+        ? 'secondary'
+        : (runningHealthy ? 'success' : 'warning');
+    const items = [
+        { label: '连接', text: connectionText, tone: connectionTone },
+        { label: '保活', text: keepaliveText, tone: keepaliveTone },
+        { label: 'Token', text: tokenText, tone: tokenTone }
+    ];
+
+    return `
+        <div class="dashboard-account-runtime" aria-label="账号运行态快照">
+            <div class="dashboard-account-runtime-summary is-${summaryTone}">
+                <span class="dashboard-account-runtime-summary-dot" aria-hidden="true"></span>
+                <span class="dashboard-account-runtime-summary-text">${escapeHtml(summaryText)}</span>
+            </div>
+            <div class="dashboard-account-runtime-signals">
+                ${items.map(item => {
+                    const detailText = `${item.label}: ${item.text}`;
+                    return `
+                        <span class="dashboard-account-runtime-signal is-${item.tone}" title="${escapeHtml(detailText)}" aria-label="${escapeHtml(detailText)}">
+                            <span class="dashboard-account-runtime-signal-dot" aria-hidden="true"></span>
+                            <span class="dashboard-account-runtime-signal-label">${escapeHtml(item.label)}</span>
+                        </span>
+                    `;
+                }).join('')}
+            </div>
+        </div>
+    `;
+}
+
 function renderDashboardAccountCard(account) {
     const isEnabled = account.enabled === undefined ? true : account.enabled;
     const keywordCount = account.keywordCount || 0;
@@ -415,6 +474,7 @@ function renderDashboardAccountCard(account) {
         renderDashboardAccountMetric('回复模式', replyModeText, replyModeTone),
         renderDashboardAccountMetric('定时擦亮', polishScheduleMetricText, polishScheduleTone)
     ].join('');
+    const runtimeSnapshot = renderDashboardAccountRuntimeSnapshot(account.runtime_status);
 
     const secondarySummary = [
         {
@@ -469,6 +529,7 @@ function renderDashboardAccountCard(account) {
                 </div>
             </div>
             <div class="dashboard-account-main-metrics">${metrics}</div>
+            ${runtimeSnapshot}
         </div>
     `;
 }

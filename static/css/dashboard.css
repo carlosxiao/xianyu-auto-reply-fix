@@ -628,6 +628,88 @@
   gap: 0.7rem;
 }
 
+.dashboard-account-runtime {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 0.8rem 1rem;
+  margin-top: 0.95rem;
+  padding-top: 0.85rem;
+  border-top: 1px solid var(--border-color);
+}
+
+.dashboard-account-runtime-summary {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.48rem;
+  min-width: 0;
+  font-size: 0.84rem;
+  font-weight: 700;
+  line-height: 1.2;
+  color: var(--text-color);
+}
+
+.dashboard-account-runtime-summary-dot,
+.dashboard-account-runtime-signal-dot {
+  width: 0.48rem;
+  height: 0.48rem;
+  border-radius: 999px;
+  background: currentColor;
+  flex: 0 0 auto;
+}
+
+.dashboard-account-runtime-summary-text {
+  white-space: nowrap;
+}
+
+.dashboard-account-runtime-signals {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 0.5rem 0.85rem;
+  min-width: 0;
+}
+
+.dashboard-account-runtime-signal {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.38rem;
+  min-width: 0;
+  color: var(--secondary-color);
+  font-size: 0.76rem;
+  font-weight: 600;
+  line-height: 1.2;
+}
+
+.dashboard-account-runtime-signal-label {
+  white-space: nowrap;
+}
+
+.dashboard-account-runtime-summary.is-success,
+.dashboard-account-runtime-signal.is-success {
+  color: #0f766e;
+}
+
+.dashboard-account-runtime-summary.is-warning,
+.dashboard-account-runtime-signal.is-warning {
+  color: #b45309;
+}
+
+.dashboard-account-runtime-summary.is-danger,
+.dashboard-account-runtime-signal.is-danger {
+  color: #b91c1c;
+}
+
+.dashboard-account-runtime-summary.is-info,
+.dashboard-account-runtime-signal.is-info {
+  color: #1d4ed8;
+}
+
+.dashboard-account-runtime-summary.is-secondary,
+.dashboard-account-runtime-signal.is-secondary {
+  color: var(--secondary-color);
+}
+
 .dashboard-account-metric {
   min-width: 0;
   border: 1px solid var(--border-color);
@@ -762,6 +844,10 @@
   background: color-mix(in srgb, var(--card-bg) 92%, var(--bg-color) 8%);
 }
 
+.dashboard-account-card.is-disabled .dashboard-account-runtime {
+  border-top-color: color-mix(in srgb, var(--border-color) 80%, transparent 20%);
+}
+
 .dashboard-account-empty {
   border: 1px dashed var(--border-color);
   border-radius: 16px;
@@ -869,6 +955,35 @@
 
 [data-theme="dark"] .dashboard-account-metric.is-warn {
   background: linear-gradient(180deg, rgba(245, 158, 11, 0.1), var(--card-bg));
+}
+
+[data-theme="dark"] .dashboard-account-runtime {
+  border-top-color: var(--border-color);
+}
+
+[data-theme="dark"] .dashboard-account-runtime-summary.is-success,
+[data-theme="dark"] .dashboard-account-runtime-signal.is-success {
+  color: #6ee7b7;
+}
+
+[data-theme="dark"] .dashboard-account-runtime-summary.is-warning,
+[data-theme="dark"] .dashboard-account-runtime-signal.is-warning {
+  color: #fcd34d;
+}
+
+[data-theme="dark"] .dashboard-account-runtime-summary.is-danger,
+[data-theme="dark"] .dashboard-account-runtime-signal.is-danger {
+  color: #fca5a5;
+}
+
+[data-theme="dark"] .dashboard-account-runtime-summary.is-info,
+[data-theme="dark"] .dashboard-account-runtime-signal.is-info {
+  color: #93c5fd;
+}
+
+[data-theme="dark"] .dashboard-account-runtime-summary.is-secondary,
+[data-theme="dark"] .dashboard-account-runtime-signal.is-secondary {
+  color: #cbd5e1;
 }
 
 [data-theme="dark"] .dashboard-account-empty {
@@ -1260,6 +1375,17 @@
 
   .dashboard-account-main-metrics {
     grid-template-columns: 1fr;
+  }
+
+  .dashboard-account-runtime {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 0.55rem;
+  }
+
+  .dashboard-account-runtime-signals {
+    justify-content: flex-start;
+    gap: 0.48rem 0.7rem;
   }
 
   .dashboard-account-card-side {
