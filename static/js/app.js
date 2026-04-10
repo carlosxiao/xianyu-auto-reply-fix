@@ -657,6 +657,24 @@ function isRuntimeStatusHealthy(runtimeStatus) {
     );
 }
 
+function getRuntimeStatusRecentAnchor(runtimeStatus) {
+    const normalizedRuntimeStatus = runtimeStatus || {};
+    const timestampKeys = [
+        'state_last_changed_at',
+        'last_successful_connection_at',
+        'last_heartbeat_response_at',
+        'session_keepalive_at',
+        'token_last_refreshed_at',
+        'last_message_received_at',
+    ];
+
+    const timestamps = timestampKeys
+        .map(key => Number(normalizedRuntimeStatus[key] || 0))
+        .filter(value => Number.isFinite(value) && value > 0);
+
+    return timestamps.length ? Math.max(...timestamps) : 0;
+}
+
 function shouldAutoRetryRuntimeStatus(runtimeStatus) {
     if (!runtimeStatus?.running) {
         return false;
@@ -671,12 +689,51 @@ function shouldAutoRetryRuntimeStatus(runtimeStatus) {
         return false;
     }
 
-    const stateChangedAt = Number(runtimeStatus.state_last_changed_at || 0);
-    if (!stateChangedAt) {
+    const recentAnchor = getRuntimeStatusRecentAnchor(runtimeStatus);
+    if (!recentAnchor) {
         return false;
     }
 
-    return ((Date.now() / 1000) - stateChangedAt) <= 20;
+    return ((Date.now() / 1000) - recentAnchor) <= 90;
+}
+
+function getMessageStreamRuntimeDisplay(runtimeStatus) {
+    const normalizedRuntimeStatus = runtimeStatus || {};
+    const explicitStatus = String(normalizedRuntimeStatus.message_stream_status || '').trim();
+    const explicitNote = String(normalizedRuntimeStatus.message_stream_note || '').trim();
+    const connectionState = String(normalizedRuntimeStatus.connection_state || '').trim();
+
+    let status = explicitStatus;
+    if (!status) {
+        if (!normalizedRuntimeStatus.running) {
+            status = 'not_running';
+        } else if (connectionState === 'connecting' || connectionState === 'reconnecting') {
+            status = 'recovering';
+        } else if (connectionState !== 'connected' || normalizedRuntimeStatus.ws_ready === false) {
+            status = 'connection_unready';
+        } else if (normalizedRuntimeStatus.message_stream_ready) {
+            status = 'watching';
+        } else {
+            status = 'connection_unready';
+        }
+    }
+
+    let note = explicitNote;
+    if (!note) {
+        if (!normalizedRuntimeStatus.running) {
+            note = '账号实例未启动，业务消息流尚未建立';
+        } else if (status === 'recovering') {
+            note = '连接正在恢复，业务消息流状态将在重连稳定后更新';
+        } else if (status === 'connection_unready') {
+            note = '连接未就绪，业务消息流状态待 WebSocket 恢复后更新';
+        } else if (status === 'watching') {
+            note = '当前连接尚未收到非心跳业务包';
+        } else {
+            note = '业务消息流状态等待更多运行时数据';
+        }
+    }
+
+    return { status, note };
 }
 
 function scheduleDashboardRuntimeAutoRetry(accounts) {
@@ -757,7 +814,8 @@ function renderDashboardAccountRuntimeSnapshot(runtimeStatus) {
     const connectionState = normalizedRuntimeStatus.connection_state || 'not_running';
     const keepaliveDisplayStatus = normalizedRuntimeStatus.session_keepalive_display_status || normalizedRuntimeStatus.session_keepalive_status || '';
     const tokenStatus = normalizedRuntimeStatus.token_refresh_status || '';
-    const messageStreamStatus = normalizedRuntimeStatus.message_stream_status || '';
+    const messageStreamDisplay = getMessageStreamRuntimeDisplay(normalizedRuntimeStatus);
+    const messageStreamStatus = messageStreamDisplay.status;
 
     const connectionText = getAboutStatusText('connection', connectionState) || '未运行';
     const connectionTone = getAboutStatusVariant('connection', connectionState);
@@ -3415,9 +3473,40 @@ function buildAboutRuntimeMetaItem(label, value) {
 }
 
 function buildAboutReadinessValue(items) {
+    const normalizedItems = Array.isArray(items) ? items : [];
+    const totalCount = normalizedItems.length;
+    const readyCount = normalizedItems.filter(item => item.ready).length;
+    const progressPercent = totalCount
+        ? Math.max(0, Math.min(100, Math.round((readyCount / totalCount) * 100)))
+        : 0;
+    const pendingLabels = normalizedItems
+        .filter(item => !item.ready)
+        .map(item => item.label);
+
+    let summaryNote = '暂无链路状态';
+    if (totalCount > 0 && pendingLabels.length === 0) {
+        summaryNote = '四条关键链路均已就绪';
+    } else if (totalCount > 0 && pendingLabels.length === totalCount) {
+        summaryNote = '四条关键链路均未就绪';
+    } else if (pendingLabels.length > 0) {
+        summaryNote = `待处理：${pendingLabels.join(' / ')}`;
+    }
+
     return `
-        <div class="account-diagnostics-readiness-list">
-            ${items.map(item => `
+        <div class="account-diagnostics-readiness-summary">
+            <div class="account-diagnostics-readiness-hero">
+                <div class="account-diagnostics-readiness-ratio">
+                    <span class="account-diagnostics-readiness-ratio-current">${readyCount}</span>
+                    <span class="account-diagnostics-readiness-ratio-total">/ ${totalCount}</span>
+                </div>
+                <div class="account-diagnostics-readiness-caption">关键链路已就绪</div>
+            </div>
+            <div class="account-diagnostics-readiness-progress" aria-hidden="true">
+                <span class="account-diagnostics-readiness-progress-bar" style="width: ${progressPercent}%"></span>
+            </div>
+            <div class="account-diagnostics-readiness-percent">${progressPercent}% 就绪</div>
+            <div class="account-diagnostics-readiness-list">
+                ${normalizedItems.map(item => `
                 <span class="account-diagnostics-readiness-chip ${item.ready ? 'is-ready' : 'is-pending'}">
                     <span class="account-diagnostics-readiness-name-wrap">
                         <span class="account-diagnostics-readiness-dot"></span>
@@ -3425,7 +3514,9 @@ function buildAboutReadinessValue(items) {
                     </span>
                     <span class="account-diagnostics-readiness-state">${item.ready ? '已就绪' : '未就绪'}</span>
                 </span>
-            `).join('')}
+                `).join('')}
+            </div>
+            <div class="account-diagnostics-readiness-summary-note">${escapeHtml(summaryNote)}</div>
         </div>
     `;
 }
@@ -3503,7 +3594,7 @@ function getAboutRuntimeOverview(runtimeStatus, readinessCount = 0) {
     if (!runtimeStatus?.ws_ready || !runtimeStatus?.session_ready || !runtimeStatus?.has_current_token || !runtimeStatus?.message_stream_ready) {
         return {
             tone: 'warning',
-            title: `${readinessCount} / 5 关键链路已就绪`,
+            title: `${readinessCount} / 4 关键链路已就绪`,
             note: '链路部分可用，优先处理未就绪项，再观察保活与消息链路。',
         };
     }
@@ -3544,7 +3635,8 @@ function renderAboutRuntimeStatus(runtimeStatus) {
         runtimeStatus.state_last_changed_at_display,
         runtimeStatus.state_last_changed_at
     );
-    const messageStreamStatus = runtimeStatus.message_stream_status || '';
+    const messageStreamDisplay = getMessageStreamRuntimeDisplay(runtimeStatus);
+    const messageStreamStatus = messageStreamDisplay.status;
     const readinessItems = [
         { label: '实例', ready: !!runtimeStatus.running },
         { label: 'WS', ready: !!runtimeStatus.ws_ready },
@@ -3553,8 +3645,8 @@ function renderAboutRuntimeStatus(runtimeStatus) {
         { label: '业务流', ready: !!runtimeStatus.message_stream_ready },
     ];
     const readinessSignalItems = readinessItems.slice(1);
-    const readinessCount = readinessItems.filter(item => item.ready).length;
-    const overview = getAboutRuntimeOverview(runtimeStatus, readinessCount);
+    const readinessSignalCount = readinessSignalItems.filter(item => item.ready).length;
+    const overview = getAboutRuntimeOverview(runtimeStatus, readinessSignalCount);
     const connectionTone = getAboutStatusVariant('connection', runtimeStatus.connection_state);
     const keepaliveDisplayStatus = runtimeStatus.session_keepalive_display_status || runtimeStatus.session_keepalive_status;
     const keepaliveTone = getAboutStatusVariant('keepalive', keepaliveDisplayStatus);
@@ -3572,54 +3664,59 @@ function renderAboutRuntimeStatus(runtimeStatus) {
                 <div class="account-diagnostics-status-note-title">${escapeHtml(overview.title)}</div>
                 <div class="account-diagnostics-status-note-text">${escapeHtml(overview.note)}</div>
             </div>
-            <div class="account-diagnostics-status-grid">
-                ${buildAboutRuntimeStatusItem({
-                    label: '连接状态',
-                    value: buildAboutStatusBadge('connection', runtimeStatus.connection_state),
-                    note: `最近连接成功：${lastConnectionDisplay}`,
-                    tone: connectionTone,
-                    richValue: true,
-                    accent: 'connection',
-                    icon: 'hdd-network',
-                })}
-                ${buildAboutRuntimeStatusItem({
-                    label: '轻保活状态',
-                    value: buildAboutStatusBadge('keepalive', keepaliveDisplayStatus),
-                    note: runtimeStatus.session_keepalive_display_note
-                        ? `最近执行：${keepaliveDisplay} · ${runtimeStatus.session_keepalive_display_note}`
-                        : `最近执行：${keepaliveDisplay}`,
-                    tone: keepaliveTone,
-                    richValue: true,
-                    accent: 'keepalive',
-                    icon: 'heart-pulse',
-                })}
-                ${buildAboutRuntimeStatusItem({
-                    label: 'Token 刷新状态',
-                    value: buildAboutStatusBadge('token', runtimeStatus.token_refresh_status),
-                    note: `最近刷新：${tokenRefreshDisplay}`,
-                    tone: tokenTone,
-                    richValue: true,
-                    accent: 'token',
-                    icon: 'key',
-                })}
-                ${buildAboutRuntimeStatusItem({
-                    label: '业务消息流',
-                    value: buildAboutStatusBadge('stream', messageStreamStatus),
-                    note: runtimeStatus.message_stream_note || '暂无业务消息流状态信息',
-                    tone: messageStreamTone,
-                    richValue: true,
-                    accent: 'readiness',
-                    icon: 'broadcast-pin',
-                })}
-                ${buildAboutRuntimeStatusItem({
-                    label: '链路就绪情况',
-                    value: buildAboutReadinessValue(readinessSignalItems),
-                    note: `${readinessSignalItems.filter(item => item.ready).length} / 4 链路已就绪`,
-                    tone: readinessTone,
-                    richValue: true,
-                    accent: 'readiness',
-                    icon: 'diagram-3',
-                })}
+            <div class="account-diagnostics-status-body">
+                <div class="account-diagnostics-status-primary">
+                    <div class="account-diagnostics-status-grid">
+                        ${buildAboutRuntimeStatusItem({
+                            label: '连接状态',
+                            value: buildAboutStatusBadge('connection', runtimeStatus.connection_state),
+                            note: `最近连接成功：${lastConnectionDisplay}`,
+                            tone: connectionTone,
+                            richValue: true,
+                            accent: 'connection',
+                            icon: 'hdd-network',
+                        })}
+                        ${buildAboutRuntimeStatusItem({
+                            label: '轻保活状态',
+                            value: buildAboutStatusBadge('keepalive', keepaliveDisplayStatus),
+                            note: runtimeStatus.session_keepalive_display_note
+                                ? `最近执行：${keepaliveDisplay} · ${runtimeStatus.session_keepalive_display_note}`
+                                : `最近执行：${keepaliveDisplay}`,
+                            tone: keepaliveTone,
+                            richValue: true,
+                            accent: 'keepalive',
+                            icon: 'heart-pulse',
+                        })}
+                        ${buildAboutRuntimeStatusItem({
+                            label: 'Token 刷新状态',
+                            value: buildAboutStatusBadge('token', runtimeStatus.token_refresh_status),
+                            note: `最近刷新：${tokenRefreshDisplay}`,
+                            tone: tokenTone,
+                            richValue: true,
+                            accent: 'token',
+                            icon: 'key',
+                        })}
+                        ${buildAboutRuntimeStatusItem({
+                            label: '业务消息流',
+                            value: buildAboutStatusBadge('stream', messageStreamStatus),
+                            note: messageStreamDisplay.note,
+                            tone: messageStreamTone,
+                            richValue: true,
+                            accent: 'readiness',
+                            icon: 'broadcast-pin',
+                        })}
+                    </div>
+                </div>
+                <div class="account-diagnostics-status-sidebar">
+                    ${buildAboutRuntimeStatusItem({
+                        label: '链路就绪情况',
+                        value: buildAboutReadinessValue(readinessSignalItems),
+                        tone: readinessTone,
+                        richValue: true,
+                        accent: 'readiness',
+                        icon: 'diagram-3',
+                    })}
+                </div>
             </div>
             <div class="account-diagnostics-status-meta">
                 ${buildAboutRuntimeMetaItem('最近收到消息', lastMessageDisplay)}
@@ -17611,7 +17708,7 @@ function exportSearchResults() {
 
 
 // 默认版本号（当无法读取 version.txt 时使用）
-const DEFAULT_VERSION = 'v1.9.1';
+const DEFAULT_VERSION = 'v1.9.2';
 
 // 当前本地版本号（动态从 version.txt 读取）
 let LOCAL_VERSION = DEFAULT_VERSION;
@@ -17722,9 +17819,19 @@ function clearIgnoredUpdateVersion(showFeedback = true) {
 
 // 本地版本历史（远程服务禁用时使用）
 const LOCAL_VERSION_HISTORY = {
-    version: 'v1.9.1',
+    version: 'v1.9.2',
     intro: '本系统仅供个人学习研究使用，请勿用于商业用途。如有问题或建议，欢迎反馈。',
     versionHistory: [
+        {
+            version: 'v1.9.2',
+            date: '2026-04-10',
+            updates: [
+                '【修复】运行态总览统一按 WS / Session / Token / 业务流 四条主链路统计，避免出现 1 / 5 与 0 / 4 混用',
+                '【修复】运行态优先读取账号真实活跃实例，临时 XianyuLive 实例不再注册到全局实例表，减少业务消息流误判未就绪',
+                '【优化】账号详情运行态总览调整为左侧四个状态卡、右侧链路就绪摘要卡，桌面端信息分区更清晰',
+                '【优化】业务消息流补充连接未就绪与恢复中的兜底展示，运行态短时异常时前端自动重试刷新更平滑'
+            ]
+        },
         {
             version: 'v1.9.1',
             date: '2026-04-10',

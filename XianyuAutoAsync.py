@@ -1472,7 +1472,7 @@ class XianyuLive:
             logger.error(f"【{self.cookie_id}】清理日志文件时出错: {self._safe_str(e)}")
             return 0
 
-    def __init__(self, cookies_str=None, cookie_id: str = "default", user_id: int = None):
+    def __init__(self, cookies_str=None, cookie_id: str = "default", user_id: int = None, *, register_instance: bool = True):
         """初始化闲鱼直播类"""
         logger.info(f"【{cookie_id}】开始初始化XianyuLive...")
 
@@ -1488,6 +1488,7 @@ class XianyuLive:
         self.cookie_id = cookie_id  # 唯一账号标识
         self.cookies_str = cookies_str  # 保存原始cookie字符串
         self.user_id = user_id  # 保存用户ID，用于token刷新时保持正确的所有者关系
+        self.register_instance = bool(register_instance)
         self.base_url = WEBSOCKET_URL
 
         if 'unb' not in self.cookies:
@@ -1673,8 +1674,9 @@ class XianyuLive:
         # 初始化订单状态处理器
         self._init_order_status_handler()
 
-        # 注册实例到类级别字典（用于API调用）
-        self._register_instance()
+        # 只有长期运行实例才进入全局实例表，避免临时实例污染运行态诊断
+        if self.register_instance:
+            self._register_instance()
 
     @property
     def message_debounce_delay(self):

@@ -2557,13 +2557,23 @@ def _build_live_runtime_status(cookie_id: str) -> Dict[str, Any]:
     if not cleaned_cid:
         return runtime_status
 
+    live_instance = None
+    try:
+        if cookie_manager.manager:
+            live_instance = getattr(cookie_manager.manager, 'live_instances', {}).get(cleaned_cid)
+    except Exception:
+        live_instance = None
+
     try:
         from XianyuAutoAsync import XianyuLive
     except Exception as e:
-        runtime_status['error'] = f"import_failed: {mask_sensitive_text(e)}"
-        return runtime_status
+        if not live_instance:
+            runtime_status['error'] = f"import_failed: {mask_sensitive_text(e)}"
+            return runtime_status
+    else:
+        if not live_instance:
+            live_instance = XianyuLive.get_instance(cleaned_cid)
 
-    live_instance = XianyuLive.get_instance(cleaned_cid)
     if not live_instance:
         return runtime_status
 
@@ -3617,6 +3627,7 @@ async def _execute_password_login(session_id: str, account_id: str, account: str
                             cookies_str=cookies_str,
                             cookie_id=account_id,
                             user_id=user_id,
+                            register_instance=False,
                         )
                         asyncio.run(temp_xianyu.preflight_token_after_manual_refresh())
                         cookies_str = temp_xianyu.cookies_str
@@ -3710,7 +3721,8 @@ async def _execute_password_login(session_id: str, account_id: str, account: str
                         temp_xianyu = XianyuLive(
                             cookies_str=cookies_str,
                             cookie_id=account_id,
-                            user_id=user_id
+                            user_id=user_id,
+                            register_instance=False,
                         )
                         
                         # 重置扫码登录Cookie刷新标志，确保账号密码登录后能立即刷新
@@ -4416,7 +4428,8 @@ async def process_qr_login_cookies(cookies: str, unb: str, current_user: Dict[st
             temp_instance = XianyuLive(
                 cookies_str=cookies,
                 cookie_id=account_id,
-                user_id=user_id
+                user_id=user_id,
+                register_instance=False,
             )
 
             # 执行cookie刷新获取真实cookie
@@ -4693,7 +4706,8 @@ async def refresh_cookies_from_qr_login(
         temp_instance = XianyuLive(
             cookies_str=qr_cookies,
             cookie_id=cookie_id,
-            user_id=current_user['user_id']
+            user_id=current_user['user_id'],
+            register_instance=False,
         )
 
         # 执行cookie刷新
@@ -8116,7 +8130,7 @@ async def get_all_items_from_account(request: dict, current_user: Dict[str, Any]
 
         # 创建XianyuLive实例，传入正确的cookie_id
         from XianyuAutoAsync import XianyuLive
-        xianyu_instance = XianyuLive(cookies_str, cookie_id)
+        xianyu_instance = XianyuLive(cookies_str, cookie_id, register_instance=False)
 
         # 调用获取所有商品信息的方法（自动分页）并同步最新商品详情
         logger.info(f"开始同步账号 {cookie_id} 的所有商品信息和最新详情")
@@ -8180,7 +8194,7 @@ async def get_items_by_page(request: dict, current_user: Dict[str, Any] = Depend
 
         # 创建XianyuLive实例，传入正确的cookie_id
         from XianyuAutoAsync import XianyuLive
-        xianyu_instance = XianyuLive(cookies_str, cookie_id)
+        xianyu_instance = XianyuLive(cookies_str, cookie_id, register_instance=False)
 
         # 调用获取指定页商品信息的方法并同步最新商品详情
         logger.info(f"开始同步账号 {cookie_id} 第{page_number}页商品信息和最新详情（每页{page_size}条）")
@@ -10717,7 +10731,7 @@ async def polish_account_items(cid: str, current_user: Dict[str, Any] = Depends(
             return {"success": False, "message": "账号cookie信息为空"}
 
         from XianyuAutoAsync import XianyuLive
-        xianyu_instance = XianyuLive(cookies_str, cid)
+        xianyu_instance = XianyuLive(cookies_str, cid, register_instance=False)
 
         logger.info(f"开始擦亮账号 {cid} 的所有商品")
         result = await xianyu_instance.polish_all_items()
@@ -10970,7 +10984,7 @@ async def scheduled_task_checker():
                                 result = {"success": False, "message": "账号cookie为空"}
                             else:
                                 from XianyuAutoAsync import XianyuLive
-                                xianyu_instance = XianyuLive(cookies_str, account_id)
+                                xianyu_instance = XianyuLive(cookies_str, account_id, register_instance=False)
                                 result = await xianyu_instance.polish_all_items()
                                 await xianyu_instance.close_session()
                     else:

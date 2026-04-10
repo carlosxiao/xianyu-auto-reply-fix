@@ -415,9 +415,28 @@ input:checked + .status-slider:before {
 
 .account-diagnostics-status-grid {
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-template-columns: 1fr;
   gap: 0.7rem;
   align-items: stretch;
+}
+
+.account-diagnostics-status-body {
+  display: grid;
+  grid-template-columns: minmax(0, 1.6fr) minmax(260px, 0.95fr);
+  gap: 0.8rem;
+  align-items: stretch;
+}
+
+.account-diagnostics-status-primary,
+.account-diagnostics-status-sidebar {
+  min-width: 0;
+}
+
+.account-diagnostics-status-sidebar .account-diagnostics-status-item {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-start;
 }
 
 .account-diagnostics-status-item {
@@ -553,6 +572,12 @@ input:checked + .status-slider:before {
   color: #4338ca;
 }
 
+.account-diagnostics-status-item.is-readiness .account-diagnostics-status-item-value {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+}
+
 .about-status-badge {
   display: inline-flex;
   align-items: center;
@@ -594,34 +619,103 @@ input:checked + .status-slider:before {
   border-color: rgba(107, 114, 128, 0.18);
 }
 
+.account-diagnostics-readiness-summary {
+  display: flex;
+  flex: 1;
+  min-height: 100%;
+  flex-direction: column;
+  gap: 0.78rem;
+}
+
+.account-diagnostics-readiness-hero {
+  display: flex;
+  flex-direction: column;
+  gap: 0.28rem;
+}
+
+.account-diagnostics-readiness-ratio {
+  display: flex;
+  align-items: flex-end;
+  gap: 0.28rem;
+  line-height: 0.95;
+  color: #312e81;
+}
+
+.account-diagnostics-readiness-ratio-current {
+  font-size: 2.85rem;
+  font-weight: 800;
+  letter-spacing: -0.05em;
+}
+
+.account-diagnostics-readiness-ratio-total {
+  padding-bottom: 0.32rem;
+  font-size: 1.02rem;
+  font-weight: 700;
+  color: rgba(67, 56, 202, 0.72);
+}
+
+.account-diagnostics-readiness-caption {
+  font-size: 0.82rem;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  color: var(--text-secondary);
+}
+
+.account-diagnostics-readiness-progress {
+  position: relative;
+  overflow: hidden;
+  height: 0.62rem;
+  border-radius: 999px;
+  background: rgba(99, 102, 241, 0.14);
+}
+
+.account-diagnostics-readiness-progress-bar {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: linear-gradient(90deg, #6366f1, #818cf8);
+  box-shadow: 0 8px 18px -12px rgba(99, 102, 241, 0.95);
+}
+
+.account-diagnostics-readiness-percent {
+  font-size: 0.8rem;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  color: #4338ca;
+}
+
 .account-diagnostics-readiness-list {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 0.4rem;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-auto-rows: minmax(0, 1fr);
+  gap: 0.5rem;
+  flex: 1;
+  align-content: stretch;
 }
 
 .account-diagnostics-readiness-chip {
   display: flex;
   flex-direction: column;
   align-items: flex-start;
-  justify-content: center;
-  gap: 0.18rem;
-  padding: 0.42rem 0.5rem;
+  justify-content: space-between;
+  gap: 0.32rem;
+  min-height: 4.1rem;
+  padding: 0.62rem 0.68rem;
   border: 1px solid var(--border-color);
-  border-radius: 10px;
-  background: rgba(248, 250, 252, 0.8);
+  border-radius: 12px;
+  background: rgba(248, 250, 252, 0.82);
 }
 
 .account-diagnostics-readiness-name-wrap {
   display: inline-flex;
   align-items: center;
-  gap: 0.35rem;
+  gap: 0.38rem;
   min-width: 0;
 }
 
 .account-diagnostics-readiness-dot {
-  width: 0.4rem;
-  height: 0.4rem;
+  width: 0.44rem;
+  height: 0.44rem;
   border-radius: 999px;
   background: currentColor;
   flex: 0 0 auto;
@@ -640,15 +734,25 @@ input:checked + .status-slider:before {
 }
 
 .account-diagnostics-readiness-name {
-  font-size: 0.8rem;
-  font-weight: 600;
+  font-size: 0.81rem;
+  font-weight: 700;
   color: currentColor;
 }
 
 .account-diagnostics-readiness-state {
-  font-size: 0.9rem;
-  font-weight: 700;
+  font-size: 0.8rem;
+  font-weight: 800;
   color: currentColor;
+}
+
+.account-diagnostics-readiness-summary-note {
+  padding: 0.72rem 0.78rem;
+  border: 1px solid rgba(99, 102, 241, 0.14);
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.58);
+  font-size: 0.82rem;
+  line-height: 1.45;
+  color: var(--text-secondary);
 }
 
 .account-diagnostics-status-meta {
@@ -1025,10 +1129,37 @@ input:checked + .status-slider:before {
 
 [data-theme="dark"] .account-diagnostics-readiness-chip.is-ready {
   color: #6ee7b7;
+  border-color: rgba(16, 185, 129, 0.28);
+  background: rgba(6, 95, 70, 0.24);
 }
 
 [data-theme="dark"] .account-diagnostics-readiness-chip.is-pending {
   color: #fcd34d;
+  border-color: rgba(245, 158, 11, 0.28);
+  background: rgba(146, 64, 14, 0.22);
+}
+
+[data-theme="dark"] .account-diagnostics-readiness-ratio {
+  color: #e0e7ff;
+}
+
+[data-theme="dark"] .account-diagnostics-readiness-ratio-total,
+[data-theme="dark"] .account-diagnostics-readiness-percent {
+  color: #c7d2fe;
+}
+
+[data-theme="dark"] .account-diagnostics-readiness-progress {
+  background: rgba(129, 140, 248, 0.24);
+}
+
+[data-theme="dark"] .account-diagnostics-readiness-progress-bar {
+  background: linear-gradient(90deg, #818cf8, #a5b4fc);
+}
+
+[data-theme="dark"] .account-diagnostics-readiness-summary-note {
+  background: rgba(30, 41, 59, 0.58);
+  border-color: rgba(129, 140, 248, 0.24);
+  color: #cbd5e1;
 }
 
 [data-theme="dark"] .account-diagnostics-status-note-bar {
@@ -1152,8 +1283,12 @@ input:checked + .status-slider:before {
     width: 100%;
   }
 
+  .account-diagnostics-status-body {
+    grid-template-columns: 1fr;
+  }
+
   .account-diagnostics-status-grid {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
+    grid-template-columns: 1fr;
   }
 
   .account-diagnostics-status-note-bar {
@@ -1205,6 +1340,7 @@ input:checked + .status-slider:before {
 
   .about-diagnostics-account-meta,
   .account-diagnostics-layout,
+  .account-diagnostics-status-body,
   .account-diagnostics-status-grid {
     grid-template-columns: 1fr;
   }
