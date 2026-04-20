@@ -9,15 +9,15 @@
   <link rel="stylesheet" href="/static/lib/bootstrap-icons/bootstrap-icons.css">
   <style>
     :root {
-      --primary-color: #0d6efd;
+      --primary-color: #FFE815;
       --secondary-color: #6c757d;
       --success-color: #198754;
       --danger-color: #dc3545;
     }
-    
+
     body {
-      font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
-      background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+      font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Display', 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+      background: #F4F5F7;
       min-height: 100vh;
       display: flex;
       align-items: center;
@@ -34,8 +34,8 @@
     }
     
     .login-header {
-      background: var(--primary-color);
-      color: white;
+      background: #ffffff;
+      color: #111;
       padding: 30px;
       text-align: center;
     }
@@ -47,7 +47,7 @@
     
     .login-header p {
       margin: 10px 0 0 0;
-      opacity: 0.9;
+      color: #6B7280;
     }
     
     .login-body {
@@ -63,12 +63,13 @@
     }
     
     .form-control:focus {
-      border-color: var(--primary-color);
-      box-shadow: 0 0 0 0.25rem rgba(13, 110, 253, 0.25);
+      border-color: #FFE815;
+      box-shadow: 0 0 0 0.25rem rgba(255, 232, 21, 0.25);
     }
     
     .btn-login {
-      background: var(--primary-color);
+      background: #FFE815;
+      color: #111;
       border: none;
       border-radius: 10px;
       padding: 12px;
@@ -77,9 +78,10 @@
       width: 100%;
       transition: all 0.3s ease;
     }
-    
+
     .btn-login:hover {
-      background: #0b5ed7;
+      background: #FFD600;
+      color: #111;
       transform: translateY(-2px);
     }
     
@@ -104,6 +106,18 @@
     .alert {
       border-radius: 10px;
       border: none;
+    }
+
+    .btn-outline-primary {
+      border-color: #FFE815;
+      color: #111;
+    }
+
+    .btn-outline-primary:hover,
+    .btn-outline-primary.active {
+      background-color: #FFE815;
+      border-color: #FFE815;
+      color: #111;
     }
     
     .loading {

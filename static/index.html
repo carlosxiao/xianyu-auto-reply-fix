@@ -5,48 +5,6 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>闲鱼管理系统</title>
   <link rel="icon" type="image/png" href="/static/favicon.png">
-  <!-- 防止主题闪烁：先隐藏页面，设置好主题后再显示 -->
-  <style>
-    html { visibility: hidden; }
-    html.theme-ready { visibility: visible; }
-  </style>
-  <script>
-    (function() {
-      function adjustBrightness(hex, percent) {
-        var num = parseInt(hex.replace('#', ''), 16);
-        var amt = Math.round(2.55 * percent);
-        var r = (num >> 16) + amt;
-        var g = ((num >> 8) & 0x00ff) + amt;
-        var b = (num & 0x0000ff) + amt;
-
-        return (
-          '#' +
-          (
-            0x1000000 +
-            (r < 255 ? (r < 1 ? 0 : r) : 255) * 0x10000 +
-            (g < 255 ? (g < 1 ? 0 : g) : 255) * 0x100 +
-            (b < 255 ? (b < 1 ? 0 : b) : 255)
-          )
-            .toString(16)
-            .slice(1)
-        );
-      }
-
-      var cachedThemeColor = localStorage.getItem('themeColor');
-      if (/^#[0-9A-Fa-f]{6}$/.test(cachedThemeColor)) {
-        document.documentElement.style.setProperty('--primary-color', cachedThemeColor);
-        document.documentElement.style.setProperty('--primary-hover', adjustBrightness(cachedThemeColor, -20));
-        document.documentElement.style.setProperty('--primary-light', adjustBrightness(cachedThemeColor, 40));
-      }
-
-      var savedMode = localStorage.getItem('darkMode');
-      if (savedMode === 'dark') {
-        document.documentElement.setAttribute('data-theme', 'dark');
-      }
-      // 主题设置完成，显示页面
-      document.documentElement.classList.add('theme-ready');
-    })();
-  </script>
   <link rel="stylesheet" href="/static/lib/bootstrap/bootstrap.min.css">
   <link rel="stylesheet" href="/static/lib/bootstrap-icons/bootstrap-icons.css">
 
@@ -66,9 +24,6 @@
         <img src="/static/favicon.png" alt="Logo" height="24" class="me-2">
         <span>闲鱼管理系统</span>
       </a>
-      <button class="dark-mode-toggle" onclick="toggleDarkMode()" title="切换主题（浅色/深色/跟随系统）">
-        <i class="bi bi-moon-fill" id="darkModeIcon"></i>
-      </button>
     </div>
     <nav class="sidebar-nav">
       <div class="nav-item" data-menu-id="dashboard">
@@ -2706,9 +2661,8 @@
         </div>
       </div>
       <div class="content-body">
-        <!-- 第一行：密码设置 + 主题设置 -->
+        <!-- 密码设置 -->
         <div class="row align-items-stretch">
-          <!-- 密码设置 -->
           <div class="col-md-6 d-flex">
             <div class="card flex-fill">
               <div class="card-header">
@@ -2731,50 +2685,6 @@
                   <button type="submit" class="btn btn-primary">
                     <i class="bi bi-check-circle me-1"></i>更新密码
                   </button>
-                </form>
-              </div>
-            </div>
-          </div>
-
-          <!-- 主题设置 -->
-          <div class="col-md-6 d-flex">
-            <div class="card flex-fill">
-              <div class="card-header">
-                <i class="bi bi-palette me-2"></i>主题设置
-              </div>
-              <div class="card-body">
-                <form id="themeForm">
-                  <!-- 预设颜色 -->
-                  <div class="mb-3">
-                    <label class="form-label fw-bold">预设颜色</label>
-                    <div class="d-flex flex-wrap gap-2">
-                      <button type="button" class="btn btn-sm color-preset" data-color="#4f46e5" style="background-color: #4f46e5; width: 36px; height: 36px; border-radius: 8px; border: 2px solid transparent;" title="靛蓝色"></button>
-                      <button type="button" class="btn btn-sm color-preset" data-color="#7c3aed" style="background-color: #7c3aed; width: 36px; height: 36px; border-radius: 8px; border: 2px solid transparent;" title="紫罗兰"></button>
-                      <button type="button" class="btn btn-sm color-preset" data-color="#2563eb" style="background-color: #2563eb; width: 36px; height: 36px; border-radius: 8px; border: 2px solid transparent;" title="蓝色"></button>
-                      <button type="button" class="btn btn-sm color-preset" data-color="#0891b2" style="background-color: #0891b2; width: 36px; height: 36px; border-radius: 8px; border: 2px solid transparent;" title="青色"></button>
-                      <button type="button" class="btn btn-sm color-preset" data-color="#059669" style="background-color: #059669; width: 36px; height: 36px; border-radius: 8px; border: 2px solid transparent;" title="绿色"></button>
-                      <button type="button" class="btn btn-sm color-preset" data-color="#d97706" style="background-color: #d97706; width: 36px; height: 36px; border-radius: 8px; border: 2px solid transparent;" title="橙色"></button>
-                      <button type="button" class="btn btn-sm color-preset" data-color="#dc2626" style="background-color: #dc2626; width: 36px; height: 36px; border-radius: 8px; border: 2px solid transparent;" title="红色"></button>
-                      <button type="button" class="btn btn-sm color-preset" data-color="#db2777" style="background-color: #db2777; width: 36px; height: 36px; border-radius: 8px; border: 2px solid transparent;" title="粉色"></button>
-                      <button type="button" class="btn btn-sm color-preset" data-color="#475569" style="background-color: #475569; width: 36px; height: 36px; border-radius: 8px; border: 2px solid transparent;" title="灰色"></button>
-                    </div>
-                  </div>
-
-                  <!-- 自定义颜色 -->
-                  <div class="mb-3">
-                    <label class="form-label fw-bold">自定义颜色</label>
-                    <div class="d-flex align-items-center gap-2">
-                      <input type="color" class="form-control form-control-color" id="themeColorPicker" value="#4f46e5" title="选择主题颜色">
-                      <input type="text" class="form-control" id="themeColorHex" value="#4f46e5" style="width: 120px;" maxlength="7" placeholder="#4f46e5">
-                    </div>
-                    <small class="form-text text-muted">点击色块选择或直接输入颜色代码</small>
-                  </div>
-
-                  <div class="d-grid mt-3">
-                    <button type="submit" class="btn btn-primary">
-                      <i class="bi bi-check-circle me-1"></i>保存主题设置
-                    </button>
-                  </div>
                 </form>
               </div>
             </div>

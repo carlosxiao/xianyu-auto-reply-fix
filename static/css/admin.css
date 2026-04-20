@@ -51,7 +51,7 @@
 }
 
 .table tbody tr:hover {
-    background-color: rgba(79, 70, 229, 0.05);
+    background-color: rgba(255, 232, 21, 0.05);
 }
 
 /* 数据统计卡片 */
@@ -111,7 +111,7 @@
 
 #tableSelect:focus {
     border-color: var(--primary-color);
-    box-shadow: 0 0 0 0.2rem rgba(79, 70, 229, 0.25);
+    box-shadow: 0 0 0 0.2rem rgba(255, 232, 21, 0.25);
 }
 
 /* 记录计数样式 */

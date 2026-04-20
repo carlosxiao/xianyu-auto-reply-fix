@@ -276,7 +276,7 @@ input:checked + .status-slider:before {
 
 .account-diagnostics-card .card-header .btn-primary {
   background: rgba(255, 255, 255, 0.96);
-  color: #4338ca;
+  color: #111;
   border: none;
 }
 
@@ -338,9 +338,9 @@ input:checked + .status-slider:before {
 }
 
 .account-diagnostics-main-panel {
-  border-color: rgba(99, 102, 241, 0.18);
+  border-color: rgba(255, 214, 0, 0.18);
   background:
-    radial-gradient(circle at top right, rgba(99, 102, 241, 0.11), transparent 32%),
+    radial-gradient(circle at top right, rgba(255, 214, 0, 0.11), transparent 32%),
     linear-gradient(180deg, rgba(238, 242, 255, 0.92), rgba(255, 255, 255, 0.98) 56%);
 }
 
@@ -359,7 +359,7 @@ input:checked + .status-slider:before {
 }
 
 .account-diagnostics-main-panel .account-diagnostics-section-head {
-  border-bottom-color: rgba(99, 102, 241, 0.16);
+  border-bottom-color: rgba(255, 214, 0, 0.16);
 }
 
 .account-diagnostics-main-panel .account-diagnostics-section-title {
@@ -550,7 +550,7 @@ input:checked + .status-slider:before {
 }
 
 .account-diagnostics-status-item.is-readiness {
-  --diagnostics-accent: #6366f1;
+  --diagnostics-accent: #FFE815;
   background: linear-gradient(135deg, rgba(224, 231, 255, 0.92), rgba(255, 255, 255, 0.98) 52%);
 }
 
@@ -570,8 +570,8 @@ input:checked + .status-slider:before {
 }
 
 .account-diagnostics-status-item.is-readiness .account-diagnostics-status-item-icon {
-  background: rgba(99, 102, 241, 0.14);
-  color: #4338ca;
+  background: rgba(255, 214, 0, 0.14);
+  color: #111;
 }
 
 .account-diagnostics-status-item.is-connection .account-diagnostics-status-item-label {
@@ -587,7 +587,7 @@ input:checked + .status-slider:before {
 }
 
 .account-diagnostics-status-item.is-readiness .account-diagnostics-status-item-label {
-  color: #4338ca;
+  color: #111;
 }
 
 .account-diagnostics-status-item.is-readiness .account-diagnostics-status-item-value {
@@ -684,22 +684,22 @@ input:checked + .status-slider:before {
   overflow: hidden;
   height: 0.62rem;
   border-radius: 999px;
-  background: rgba(99, 102, 241, 0.14);
+  background: rgba(255, 214, 0, 0.14);
 }
 
 .account-diagnostics-readiness-progress-bar {
   display: block;
   height: 100%;
   border-radius: inherit;
-  background: linear-gradient(90deg, #6366f1, #818cf8);
-  box-shadow: 0 8px 18px -12px rgba(99, 102, 241, 0.95);
+  background: linear-gradient(90deg, #FFE815, #FFF176);
+  box-shadow: 0 8px 18px -12px rgba(255, 214, 0, 0.95);
 }
 
 .account-diagnostics-readiness-percent {
   font-size: 0.8rem;
   font-weight: 700;
   letter-spacing: 0.02em;
-  color: #4338ca;
+  color: #111;
 }
 
 .account-diagnostics-readiness-list {
@@ -765,7 +765,7 @@ input:checked + .status-slider:before {
 
 .account-diagnostics-readiness-summary-note {
   padding: 0.72rem 0.78rem;
-  border: 1px solid rgba(99, 102, 241, 0.14);
+  border: 1px solid rgba(255, 214, 0, 0.14);
   border-radius: 12px;
   background: rgba(255, 255, 255, 0.58);
   font-size: 0.82rem;
@@ -868,9 +868,9 @@ input:checked + .status-slider:before {
   align-items: center;
   padding: 0.24rem 0.62rem;
   border-radius: 999px;
-  border: 1px solid rgba(79, 70, 229, 0.14);
-  background: rgba(79, 70, 229, 0.08);
-  color: #4338ca;
+  border: 1px solid rgba(255, 232, 21, 0.14);
+  background: rgba(255, 232, 21, 0.08);
+  color: #111;
   font-size: 0.78rem;
 }
 
@@ -897,8 +897,8 @@ input:checked + .status-slider:before {
   width: 2.4rem;
   height: 2.4rem;
   border-radius: 999px;
-  background: rgba(79, 70, 229, 0.08);
-  color: #6366f1;
+  background: rgba(255, 232, 21, 0.08);
+  color: #FFE815;
   font-size: 1.1rem;
 }
 
@@ -922,7 +922,7 @@ input:checked + .status-slider:before {
   position: absolute;
   inset: 0 auto 0 0;
   width: 4px;
-  background: linear-gradient(180deg, #4f46e5, #818cf8);
+  background: linear-gradient(180deg, #FFE815, #FFF176);
 }
 
 .about-history-item-header {
@@ -951,8 +951,8 @@ input:checked + .status-slider:before {
   width: 2rem;
   height: 2rem;
   border-radius: 999px;
-  background: linear-gradient(135deg, rgba(79, 70, 229, 0.16), rgba(129, 140, 248, 0.22));
-  color: #4338ca;
+  background: linear-gradient(135deg, rgba(255, 232, 21, 0.16), rgba(255, 241, 118, 0.22));
+  color: #111;
   font-size: 0.82rem;
   font-weight: 700;
   flex: 0 0 auto;
@@ -1055,241 +1055,21 @@ input:checked + .status-slider:before {
   color: var(--text-secondary);
 }
 
-[data-theme="dark"] .account-diagnostics-card .card-header .form-select {
-  border-color: rgba(255, 255, 255, 0.22);
-  background: rgba(255, 255, 255, 0.1);
-  color: #fff;
-}
-
-[data-theme="dark"] .account-diagnostics-card .card-header .text-muted {
-  color: rgba(255, 255, 255, 0.72) !important;
-}
-
-[data-theme="dark"] .account-diagnostics-picker .form-label {
-  color: rgba(255, 255, 255, 0.85);
-}
-
-[data-theme="dark"] .account-diagnostics-main-panel {
-  border-color: rgba(129, 140, 248, 0.28);
-  background:
-    radial-gradient(circle at top right, rgba(99, 102, 241, 0.22), transparent 36%),
-    linear-gradient(180deg, rgba(30, 41, 59, 0.98), rgba(15, 23, 42, 0.95));
-}
-
-[data-theme="dark"] .account-diagnostics-history-panel {
-  background: linear-gradient(180deg, rgba(30, 41, 59, 0.98), rgba(15, 23, 42, 0.95));
-}
-
-[data-theme="dark"] .account-diagnostics-main-panel .account-diagnostics-section-title {
-  color: #c7d2fe;
-}
-
-[data-theme="dark"] .account-diagnostics-summary-item,
-[data-theme="dark"] .about-status-panel,
-[data-theme="dark"] .about-history-panel,
-[data-theme="dark"] .account-diagnostics-status-item,
-[data-theme="dark"] .about-history-item,
-[data-theme="dark"] .account-diagnostics-status-meta-item,
-[data-theme="dark"] .account-diagnostics-history-form,
-[data-theme="dark"] .about-history-summary,
-[data-theme="dark"] .about-history-message-shell,
-[data-theme="dark"] .about-placeholder,
-[data-theme="dark"] .account-diagnostics-readiness-chip,
-[data-theme="dark"] .about-history-index,
-[data-theme="dark"] .about-history-raw pre {
-  background: var(--bg-secondary);
-  border-color: var(--border-color);
-}
-
-[data-theme="dark"] .account-diagnostics-status-item.is-connection {
-  background: linear-gradient(135deg, rgba(30, 64, 175, 0.24), rgba(30, 41, 59, 0.96) 52%);
-}
-
-[data-theme="dark"] .account-diagnostics-status-item.is-keepalive {
-  background: linear-gradient(135deg, rgba(6, 95, 70, 0.26), rgba(30, 41, 59, 0.96) 52%);
-}
-
-[data-theme="dark"] .account-diagnostics-status-item.is-token {
-  background: linear-gradient(135deg, rgba(146, 64, 14, 0.24), rgba(30, 41, 59, 0.96) 52%);
-}
-
-[data-theme="dark"] .account-diagnostics-status-item.is-readiness {
-  background: linear-gradient(135deg, rgba(67, 56, 202, 0.26), rgba(30, 41, 59, 0.96) 52%);
-}
-
-[data-theme="dark"] .about-history-summary-meta {
-  border-color: rgba(129, 140, 248, 0.3);
-  background: rgba(99, 102, 241, 0.18);
-  color: #c7d2fe;
-}
-
-[data-theme="dark"] .about-history-raw summary {
-  background: rgba(148, 163, 184, 0.14);
-}
-
-[data-theme="dark"] #aboutConversationHistory .about-placeholder {
-  background: rgba(30, 41, 59, 0.92);
-}
-
-[data-theme="dark"] #aboutConversationHistory .about-placeholder i {
-  background: rgba(99, 102, 241, 0.16);
-  color: #c7d2fe;
-}
-
-[data-theme="dark"] .account-diagnostics-history-input-wrap .form-control {
-  background: rgba(15, 23, 42, 0.55);
-}
-
-[data-theme="dark"] .about-history-sender-avatar {
-  background: linear-gradient(135deg, rgba(99, 102, 241, 0.24), rgba(129, 140, 248, 0.32));
-  color: #e0e7ff;
-}
-
-[data-theme="dark"] .account-diagnostics-readiness-chip.is-ready {
-  color: #6ee7b7;
-  border-color: rgba(16, 185, 129, 0.28);
-  background: rgba(6, 95, 70, 0.24);
-}
-
-[data-theme="dark"] .account-diagnostics-readiness-chip.is-pending {
-  color: #fcd34d;
-  border-color: rgba(245, 158, 11, 0.28);
-  background: rgba(146, 64, 14, 0.22);
-}
-
-[data-theme="dark"] .account-diagnostics-readiness-ratio {
-  color: #e0e7ff;
-}
-
-[data-theme="dark"] .account-diagnostics-readiness-ratio-total,
-[data-theme="dark"] .account-diagnostics-readiness-percent {
-  color: #c7d2fe;
-}
-
-[data-theme="dark"] .account-diagnostics-readiness-progress {
-  background: rgba(129, 140, 248, 0.24);
-}
-
-[data-theme="dark"] .account-diagnostics-readiness-progress-bar {
-  background: linear-gradient(90deg, #818cf8, #a5b4fc);
-}
-
-[data-theme="dark"] .account-diagnostics-readiness-summary-note {
-  background: rgba(30, 41, 59, 0.58);
-  border-color: rgba(129, 140, 248, 0.24);
-  color: #cbd5e1;
-}
-
-[data-theme="dark"] .account-diagnostics-status-note-bar {
-  border-color: var(--border-color);
-}
-
-[data-theme="dark"] .account-diagnostics-status-note-bar.is-success {
-  background: rgba(16, 185, 129, 0.14);
-}
-
-[data-theme="dark"] .account-diagnostics-status-note-bar.is-warning {
-  background: rgba(245, 158, 11, 0.14);
-}
-
-[data-theme="dark"] .account-diagnostics-status-note-bar.is-danger {
-  background: rgba(239, 68, 68, 0.14);
-}
-
-[data-theme="dark"] .account-diagnostics-status-note-bar.is-info {
-  background: rgba(59, 130, 246, 0.14);
-}
 
 /* ================================
    暗色模式适配 - 账号管理
    ================================ */
 
 /* 禁用账号行 */
-[data-theme="dark"] .account-row.disabled {
-  background-color: rgba(0, 0, 0, 0.2);
-}
 
-[data-theme="dark"] .account-row.disabled .cookie-value {
-  background-color: var(--input-bg);
-  color: var(--text-secondary);
-}
-
-[data-theme="dark"] .cookie-value {
-  color: var(--text-color);
-}
 
 /* 状态徽章 */
-[data-theme="dark"] .status-badge.enabled {
-  background: rgba(16, 185, 129, 0.2);
-  color: #6ee7b7;
-  border-color: rgba(16, 185, 129, 0.3);
-}
 
-[data-theme="dark"] .status-badge.disabled {
-  background: rgba(239, 68, 68, 0.2);
-  color: #fca5a5;
-  border-color: rgba(239, 68, 68, 0.3);
-}
-
-[data-theme="dark"] .account-status-note-badge {
-  background: rgba(245, 158, 11, 0.16);
-  color: #fcd34d;
-  border-color: rgba(245, 158, 11, 0.32);
-}
 
 /* 禁用账号提示 */
-[data-theme="dark"] .disabled-account-notice {
-  background: rgba(245, 158, 11, 0.15);
-  border-color: rgba(245, 158, 11, 0.3);
-  color: #fcd34d;
-}
 
 /* 扫码登录模态框 */
-[data-theme="dark"] .qr-loading-tip,
-[data-theme="dark"] .bg-light-warning {
-  background-color: rgba(245, 158, 11, 0.15) !important;
-  color: #fcd34d;
-}
 
-[data-theme="dark"] .qr-login-btn small.opacity-75 {
-  color: #ecfdf5;
-  opacity: 1 !important;
-  text-shadow: 0 1px 3px rgba(0, 0, 0, 0.45);
-}
-
-[data-theme="dark"] .qr-loading-tip .text-warning,
-[data-theme="dark"] .qr-loading-tip small {
-  color: #fcd34d !important;
-}
-
-[data-theme="dark"] #qrCodeLoginModal .step-item small {
-  color: var(--text-color);
-}
-
-[data-theme="dark"] #qrCodeLoginModal .text-muted {
-  color: var(--text-secondary) !important;
-}
-
-[data-theme="dark"] #qrCodeLoginModal .alert.bg-light {
-  background-color: var(--bg-secondary) !important;
-  color: var(--text-color);
-}
-
-[data-theme="dark"] #qrCodeLoginModal .alert.bg-light small {
-  color: var(--text-color);
-}
-
-[data-theme="dark"] #qrCodeLoginModal .modal-footer.bg-light {
-  background-color: var(--bg-secondary) !important;
-}
-
-[data-theme="dark"] #qrCodeLoginModal .qr-code-wrapper.bg-light {
-  background-color: var(--bg-secondary) !important;
-}
-
-[data-theme="dark"] #qrCodeLoginModal #statusText {
-  color: var(--text-secondary);
-}
 
 /* 响应式设计 */
 @media (max-width: 992px) {

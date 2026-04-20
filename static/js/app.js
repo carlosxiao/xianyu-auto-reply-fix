@@ -222,93 +222,6 @@ function initSidebarCollapse() {
 }
 
 // ================================
-// 暗色模式功能
-// ================================
-
-// 检测系统是否为暗色模式
-function isSystemDarkMode() {
-    return window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches;
-}
-
-// 更新主题图标
-function updateDarkModeIcon(mode) {
-    const icon = document.getElementById('darkModeIcon');
-    if (!icon) return;
-
-    // 清除所有可能的图标类
-    icon.classList.remove('bi-moon-fill', 'bi-sun-fill', 'bi-circle-half');
-
-    if (mode === 'auto') {
-        icon.classList.add('bi-circle-half');
-    } else if (mode === 'dark') {
-        icon.classList.add('bi-sun-fill');
-    } else {
-        icon.classList.add('bi-moon-fill');
-    }
-}
-
-// 应用主题
-function applyDarkMode(mode) {
-    const html = document.documentElement;
-    let shouldBeDark = false;
-
-    if (mode === 'auto') {
-        shouldBeDark = isSystemDarkMode();
-    } else if (mode === 'dark') {
-        shouldBeDark = true;
-    }
-
-    if (shouldBeDark) {
-        html.setAttribute('data-theme', 'dark');
-    } else {
-        html.removeAttribute('data-theme');
-    }
-
-    updateDarkModeIcon(mode);
-}
-
-// 切换暗色模式（三态切换：light → dark → auto）
-function toggleDarkMode() {
-    const currentMode = localStorage.getItem('darkMode') || 'light';
-    let nextMode;
-
-    if (currentMode === 'light') {
-        nextMode = 'dark';
-    } else if (currentMode === 'dark') {
-        nextMode = 'auto';
-    } else {
-        nextMode = 'light';
-    }
-
-    localStorage.setItem('darkMode', nextMode);
-    applyDarkMode(nextMode);
-
-    // 显示提示
-    const modeNames = {
-        'light': '浅色模式',
-        'dark': '深色模式',
-        'auto': '跟随系统'
-    };
-    showToast(`已切换至${modeNames[nextMode]}`, 'info');
-}
-
-// 初始化暗色模式
-function initDarkMode() {
-    const savedMode = localStorage.getItem('darkMode') || 'light';
-    applyDarkMode(savedMode);
-
-    // 监听系统主题变化
-    if (window.matchMedia) {
-        window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', () => {
-            const currentMode = localStorage.getItem('darkMode') || 'light';
-            if (currentMode === 'auto') {
-                applyDarkMode('auto');
-            }
-        });
-    }
-}
-
-// ================================
 // 【仪表盘菜单】相关功能
 // ================================
 
@@ -5428,8 +5341,6 @@ document.addEventListener('DOMContentLoaded', async () => {
 
     // 初始化侧边栏折叠状态
     initSidebarCollapse();
-    // 初始化暗色模式
-    initDarkMode();
     // 初始化账号保活诊断事件
     initAboutDiagnosticsEvents();
     // 加载系统版本号
@@ -9050,66 +8961,10 @@ async function loadUserSettings() {
 
         if (response.ok) {
             const settings = await response.json();
-
-            // 设置主题颜色
-            if (settings.theme_color && settings.theme_color.value) {
-                const color = settings.theme_color.value;
-                const picker = document.getElementById('themeColorPicker');
-                const hex = document.getElementById('themeColorHex');
-                if (picker) picker.value = color;
-                if (hex) hex.value = color;
-                applyThemeColor(color);
-                updatePresetSelection(color);
-            } else {
-                localStorage.removeItem('themeColor');
-            }
         }
     } catch (error) {
         console.error('加载用户设置失败:', error);
     }
-}
-
-// 应用主题颜色（支持任意十六进制颜色）
-function applyThemeColor(color) {
-    if (!color || !color.startsWith('#')) return;
-
-    document.documentElement.style.setProperty('--primary-color', color);
-
-    // 计算hover颜色（稍微深一点）
-    const hoverColor = adjustBrightness(color, -20);
-    document.documentElement.style.setProperty('--primary-hover', hoverColor);
-
-    // 计算浅色版本（用于某些UI元素）
-    const lightColor = adjustBrightness(color, 40);
-    document.documentElement.style.setProperty('--primary-light', lightColor);
-
-    // 缓存主题色，供页面首次渲染前预应用，避免刷新闪回默认蓝色
-    localStorage.setItem('themeColor', color);
-}
-
-// 调整颜色亮度
-function adjustBrightness(hex, percent) {
-    const num = parseInt(hex.replace("#", ""), 16);
-    const amt = Math.round(2.55 * percent);
-    const R = (num >> 16) + amt;
-    const G = (num >> 8 & 0x00FF) + amt;
-    const B = (num & 0x0000FF) + amt;
-    return "#" + (0x1000000 + (R < 255 ? R < 1 ? 0 : R : 255) * 0x10000 +
-        (G < 255 ? G < 1 ? 0 : G : 255) * 0x100 +
-        (B < 255 ? B < 1 ? 0 : B : 255)).toString(16).slice(1);
-}
-
-// 更新预设颜色按钮选中状态
-function updatePresetSelection(selectedColor) {
-    document.querySelectorAll('.color-preset').forEach(btn => {
-        if (btn.dataset.color === selectedColor) {
-            btn.style.border = '2px solid #333';
-            btn.style.boxShadow = '0 0 0 2px #fff, 0 0 0 4px #333';
-        } else {
-            btn.style.border = '2px solid transparent';
-            btn.style.boxShadow = 'none';
-        }
-    });
 }
 
 // ==================== 菜单管理功能 ====================
@@ -9448,68 +9303,8 @@ async function loadMenuSettings() {
     }
 }
 
-// 主题表单提交处理
+// 密码表单提交处理
 document.addEventListener('DOMContentLoaded', function() {
-    // 颜色选择器同步
-    const themeColorPicker = document.getElementById('themeColorPicker');
-    const themeColorHex = document.getElementById('themeColorHex');
-
-    if (themeColorPicker && themeColorHex) {
-        themeColorPicker.addEventListener('input', function() {
-            themeColorHex.value = this.value;
-            applyThemeColor(this.value);
-            updatePresetSelection(this.value);
-        });
-
-        themeColorHex.addEventListener('input', function() {
-            if (/^#[0-9A-Fa-f]{6}$/.test(this.value)) {
-                themeColorPicker.value = this.value;
-                applyThemeColor(this.value);
-                updatePresetSelection(this.value);
-            }
-        });
-    }
-
-    // 预设颜色按钮点击
-    document.querySelectorAll('.color-preset').forEach(btn => {
-        btn.addEventListener('click', function() {
-            const color = this.dataset.color;
-            if (themeColorPicker) themeColorPicker.value = color;
-            if (themeColorHex) themeColorHex.value = color;
-            applyThemeColor(color);
-            updatePresetSelection(color);
-        });
-    });
-
-    const themeForm = document.getElementById('themeForm');
-    if (themeForm) {
-        themeForm.addEventListener('submit', async function(e) {
-            e.preventDefault();
-
-            const themeColor = document.getElementById('themeColorHex')?.value || '#4f46e5';
-
-            try {
-                await fetch(`${apiBase}/user-settings/theme_color`, {
-                    method: 'PUT',
-                    headers: {
-                        'Authorization': `Bearer ${authToken}`,
-                        'Content-Type': 'application/json'
-                    },
-                    body: JSON.stringify({
-                        value: themeColor,
-                        description: '主题颜色'
-                    })
-                });
-
-                applyThemeColor(themeColor);
-                showToast('主题设置保存成功', 'success');
-            } catch (error) {
-                console.error('主题设置失败:', error);
-                showToast('主题设置失败', 'danger');
-            }
-        });
-    }
-
     // 密码表单提交处理
     const passwordForm = document.getElementById('passwordForm');
     if (passwordForm) {
@@ -18542,7 +18337,7 @@ async function showUpdateInfo(newVersion) {
                 content = `
                     <div class="d-flex flex-wrap gap-2">
                         ${method.downloads.map(dl => `
-                            <a href="${dl.url}" target="_blank" class="btn btn-sm" style="background: #5a67d8; color: #fff; border: none; font-size: 14px; padding: 8px 16px;">
+                            <a href="${dl.url}" target="_blank" class="btn btn-sm" style="background: #FFD600; color: #fff; border: none; font-size: 14px; padding: 8px 16px;">
                                 <i class="bi bi-cloud-download me-1"></i>${dl.name}
                                 ${dl.extra ? `<small style="margin-left: 4px; opacity: 0.85;">(${dl.extra})</small>` : ''}
                             </a>
@@ -18553,7 +18348,7 @@ async function showUpdateInfo(newVersion) {
             
             return `
                 <div style="margin-bottom: 10px; border-radius: 8px; overflow: hidden; border: 1px solid #e0e0e0;">
-                    <div class="d-flex align-items-center justify-content-between" style="background: #5a67d8; color: #fff; padding: 8px 12px;">
+                    <div class="d-flex align-items-center justify-content-between" style="background: #FFD600; color: #fff; padding: 8px 12px;">
                         <span style="font-size: 14px; font-weight: 600;"><i class="bi ${method.icon || 'bi-box'} me-1"></i>${method.name}</span>
                         ${method.description ? `<small style="opacity: 0.85; font-size: 13px;">${method.description}</small>` : ''}
                     </div>
@@ -18592,7 +18387,7 @@ async function showUpdateInfo(newVersion) {
             <div class="modal-dialog modal-dialog-centered modal-dialog-scrollable">
                 <div class="modal-content" style="border: none; border-radius: 14px; overflow: hidden; box-shadow: 0 8px 32px rgba(0,0,0,0.15);">
                     <!-- 头部 -->
-                    <div class="modal-header py-3" style="background: linear-gradient(135deg, #667eea 0%, #5a67d8 100%); border: none;">
+                    <div class="modal-header py-3" style="background: linear-gradient(135deg, #FFE815 0%, #FFD600 100%); border: none;">
                         <h5 class="modal-title mb-0" style="color: #fff; font-weight: 600; font-size: 18px;">
                             <i class="bi bi-stars me-2"></i>发现新版本
                         </h5>
@@ -18777,15 +18572,15 @@ async function showBenefitsModal() {
         // 构建权益列表
         const benefitsList = benefitsData.benefits.map(benefit => `
             <a href="${benefit.url}" target="_blank" class="benefit-item" style="text-decoration: none; display: block; margin-bottom: 12px; border-radius: 12px; overflow: hidden; border: 1px solid #e8ecf0; transition: all 0.3s ease; box-shadow: 0 2px 8px rgba(0,0,0,0.04);">
-                <div style="background: linear-gradient(135deg, ${benefit.color || '#667eea'}20, ${benefit.color || '#667eea'}10); padding: 16px; display: flex; align-items: center; gap: 16px;">
-                    <div style="width: 50px; height: 50px; border-radius: 12px; background: ${benefit.color || '#667eea'}; display: flex; align-items: center; justify-content: center; flex-shrink: 0;">
+                <div style="background: linear-gradient(135deg, ${benefit.color || '#FFE815'}20, ${benefit.color || '#FFE815'}10); padding: 16px; display: flex; align-items: center; gap: 16px;">
+                    <div style="width: 50px; height: 50px; border-radius: 12px; background: ${benefit.color || '#FFE815'}; display: flex; align-items: center; justify-content: center; flex-shrink: 0;">
                         <i class="bi ${benefit.icon || 'bi-gift'}" style="font-size: 24px; color: #fff;"></i>
                     </div>
                     <div style="flex: 1;">
                         <div style="font-size: 16px; font-weight: 600; color: #333; margin-bottom: 4px;">${benefit.name}</div>
                         <div style="font-size: 14px; color: #666;">${benefit.description || ''}</div>
                     </div>
-                    <i class="bi bi-arrow-right-circle" style="font-size: 20px; color: ${benefit.color || '#667eea'};"></i>
+                    <i class="bi bi-arrow-right-circle" style="font-size: 20px; color: ${benefit.color || '#FFE815'};"></i>
                 </div>
             </a>
         `).join('');
@@ -18822,7 +18617,7 @@ async function showBenefitsModal() {
                         </div>
                         <!-- 底部 -->
                         <div class="modal-footer py-3" style="background: #fff; border-top: 1px solid #e8ecf0;">
-                            <button type="button" class="btn" style="background: linear-gradient(135deg, #667eea, #764ba2); color: #fff; border: none; font-size: 15px; padding: 10px 24px; border-radius: 8px;" data-bs-dismiss="modal">
+                            <button type="button" class="btn" style="background: linear-gradient(135deg, #FFE815, #E6C800); color: #fff; border: none; font-size: 15px; padding: 10px 24px; border-radius: 8px;" data-bs-dismiss="modal">
                                 <i class="bi bi-x-lg me-1"></i>关闭
                             </button>
                         </div>
@@ -19299,7 +19094,7 @@ async function showVersionInfo(version) {
         <div class="modal fade" id="versionInfoModal" tabindex="-1">
             <div class="modal-dialog modal-dialog-centered modal-lg modal-dialog-scrollable">
                 <div class="modal-content" style="border: none; border-radius: 14px; overflow: hidden; box-shadow: 0 8px 32px rgba(0,0,0,0.15);">
-                    <div class="modal-header py-3" style="background: linear-gradient(135deg, #667eea 0%, #5a67d8 100%); border: none;">
+                    <div class="modal-header py-3" style="background: linear-gradient(135deg, #FFE815 0%, #FFD600 100%); border: none;">
                         <h5 class="modal-title" style="color: #fff; font-weight: 600; font-size: 18px;">
                             <i class="bi bi-info-circle me-2"></i>版本信息
                         </h5>
@@ -19310,7 +19105,7 @@ async function showVersionInfo(version) {
                         <div class="mb-4">
                             <h6 style="color: #444; font-size: 16px; font-weight: 600;"><i class="bi bi-tag me-2"></i>当前版本</h6>
                             <div class="p-3 rounded-3" style="background: #fff; box-shadow: 0 2px 8px rgba(0,0,0,0.06);">
-                                <h4 class="mb-0" style="color: #5a67d8; font-size: 24px;">${version}</h4>
+                                <h4 class="mb-0" style="color: #FFD600; font-size: 24px;">${version}</h4>
                             </div>
                         </div>
                         
