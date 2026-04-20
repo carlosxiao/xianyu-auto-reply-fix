@@ -102,7 +102,7 @@
 
 ```bash
 # 1. 克隆项目
-git clone https://github.com/GuDong2003/xianyu-auto-reply-fix.git
+git clone https://github.com/carlosxiao/xianyu-auto-reply-fix.git
 cd xianyu-auto-reply-fix
 
 # 2. 执行部署脚本
@@ -122,7 +122,7 @@ chmod +x docker-deploy.sh
 
 ```cmd
 :: 1. 克隆项目
-git clone https://github.com/GuDong2003/xianyu-auto-reply-fix.git
+git clone https://github.com/carlosxiao/xianyu-auto-reply-fix.git
 cd xianyu-auto-reply-fix
 
 :: 2. 执行部署脚本
@@ -140,7 +140,7 @@ docker-deploy.bat
 #### 默认配置
 ```bash
 # 1. 克隆项目
-git clone https://github.com/GuDong2003/xianyu-auto-reply-fix.git
+git clone https://github.com/carlosxiao/xianyu-auto-reply-fix.git
 cd xianyu-auto-reply-fix
 
 # 2. 启动服务
@@ -153,7 +153,7 @@ docker compose up -d --build
 #### 国内构建配置
 ```bash
 # 1. 克隆项目
-git clone https://github.com/GuDong2003/xianyu-auto-reply-fix.git
+git clone https://github.com/carlosxiao/xianyu-auto-reply-fix.git
 cd xianyu-auto-reply-fix
 
 # 2. 启动服务
@@ -167,7 +167,7 @@ docker compose -f docker-compose-cn.yml up -d --build
 
 ```bash
 # 1. 克隆项目
-git clone https://github.com/GuDong2003/xianyu-auto-reply-fix.git
+git clone https://github.com/carlosxiao/xianyu-auto-reply-fix.git
 cd xianyu-auto-reply-fix
 
 # 2. 创建虚拟环境
