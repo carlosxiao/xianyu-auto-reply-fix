@@ -14665,7 +14665,8 @@ class XianyuLive:
                     logger.error(f"【{self.cookie_id}】初始化鉴权失败 ({self.init_auth_failures}/{self._init_auth_failure_threshold})")
                     logger.error(f"【{self.cookie_id}】初始化失败原因: {error_msg}")
 
-                    retry_delay = self._calculate_retry_delay(error_msg)
+                    # 使用 init_auth_failures 计算延迟，避免 connection_failures=0 导致 0 秒重试
+                    retry_delay = min(5 * self.init_auth_failures, 30)
                     circuit_until = init_auth_state.get('circuit_until', 0)
                     if circuit_until and time.time() < circuit_until:
                         circuit_wait = max(1, int(circuit_until - time.time()))
