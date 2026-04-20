@@ -463,8 +463,6 @@ async def _send_telegram_notification(config_data: Dict[str, Any], message: str,
 
 async def send_channel_notification(channel_type: Any, config_data: Dict[str, Any], message: str, *, title: str = '闲鱼管理系统通知', notification_type: str = 'info', attachment_path: Optional[str] = None, account_id: str = '') -> bool:
     normalized_type = normalize_channel_type(channel_type)
-    if normalized_type == 'qq':
-        
     if normalized_type == 'dingtalk':
         return await _send_dingtalk_notification(config_data, message, title=title, account_id=account_id)
     if normalized_type == 'feishu':
