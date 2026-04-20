@@ -9127,8 +9127,7 @@ const DEFAULT_MENU_ITEMS = [
     { id: 'notification-channels', name: '通知渠道', icon: 'bi-bell', required: false },
     { id: 'message-notifications', name: '消息通知', icon: 'bi-chat-dots', required: false },
     { id: 'online-im', name: '在线客服', icon: 'bi-headset', required: false },
-    { id: 'system-settings', name: '系统设置', icon: 'bi-gear', required: true },
-    { id: 'about', name: '关于', icon: 'bi-info-circle', required: true }
+    { id: 'system-settings', name: '系统设置', icon: 'bi-gear', required: true }
 ];
 
 // 当前菜单设置
