@@ -3,8 +3,8 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>登录 - 闲鱼管理系统</title>
-  <link rel="icon" type="image/png" href="/static/favicon.png">
+  <title>登录 - 闲鱼智控 Pro</title>
+  <link rel="icon" type="image/svg+xml" href="/static/favicon.svg">
   <link rel="stylesheet" href="/static/lib/bootstrap/bootstrap.min.css">
   <link rel="stylesheet" href="/static/lib/bootstrap-icons/bootstrap-icons.css">
   <style>
@@ -113,6 +113,7 @@
       color: #111;
     }
 
+    .btn-check:checked + .btn-outline-primary,
     .btn-outline-primary:hover,
     .btn-outline-primary.active {
       background-color: #FFE815;
@@ -132,9 +133,11 @@
 <body>
   <div class="login-container">
     <div class="login-header">
-      <img src="/static/favicon.png" alt="Logo" height="64" class="mb-3">
-      <h2>欢迎登录</h2>
-      <p>闲鱼管理系统</p>
+      <div style="width:96px;height:96px;background:#FFE815;border-radius:2rem;display:flex;align-items:center;justify-content:center;margin:0 auto 24px;box-shadow:0 10px 30px rgba(255,232,21,0.3);transform:rotate(-6deg);transition:transform 0.5s;" onmouseover="this.style.transform='rotate(0deg)'" onmouseout="this.style.transform='rotate(-6deg)'">
+        <span style="color:#111;font-weight:800;font-size:48px;">闲</span>
+      </div>
+      <h2>欢迎回来</h2>
+      <p>闲鱼智控 Pro</p>
     </div>
     
     <div class="login-body">
