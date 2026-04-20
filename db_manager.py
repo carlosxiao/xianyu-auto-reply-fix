@@ -19,7 +19,100 @@ from loguru import logger
 
 class DBManager:
     """SQLite数据库管理，持久化存储Cookie和关键字"""
-    
+
+    # 允许外部调用的安全表名白名单
+    _VALID_TABLES = frozenset([
+        'users', 'cookies', 'cookie_status', 'keywords', 'default_replies',
+        'default_reply_records', 'ai_reply_settings', 'ai_config_presets',
+        'ai_conversations', 'ai_item_cache', 'item_info', 'item_replay',
+        'cards', 'delivery_rules', 'delivery_logs', 'delivery_finalization_states',
+        'data_card_reservations', 'orders', 'notification_channels',
+        'notification_templates', 'message_notifications', 'system_settings',
+        'user_settings', 'comment_templates', 'risk_control_logs',
+        'scheduled_tasks', 'email_verifications', 'captcha_codes',
+    ])
+
+    # 每张表允许的列名白名单（用于备份导入校验）
+    _VALID_COLUMNS = {
+        'cookies': frozenset([
+            'id', 'value', 'user_id', 'auto_confirm', 'remark', 'status_note',
+            'pause_duration', 'username', 'password', 'show_browser', 'created_at',
+        ]),
+        'keywords': frozenset([
+            'cookie_id', 'keyword', 'reply', 'item_id', 'type', 'image_url',
+        ]),
+        'cookie_status': frozenset([
+            'cookie_id', 'enabled', 'updated_at',
+        ]),
+        'default_replies': frozenset([
+            'cookie_id', 'enabled', 'reply_content', 'reply_once',
+            'created_at', 'updated_at',
+        ]),
+        'notification_channels': frozenset([
+            'id', 'name', 'type', 'config', 'enabled',
+            'created_at', 'updated_at',
+        ]),
+        'message_notifications': frozenset([
+            'id', 'cookie_id', 'channel_id', 'enabled',
+            'created_at', 'updated_at',
+        ]),
+        'system_settings': frozenset([
+            'key', 'value', 'description', 'updated_at',
+        ]),
+        'item_info': frozenset([
+            'id', 'cookie_id', 'item_id', 'item_title', 'item_description',
+            'item_category', 'item_price', 'item_detail', 'is_multi_spec',
+            'multi_quantity_delivery', 'created_at', 'updated_at',
+        ]),
+        'ai_reply_settings': frozenset([
+            'cookie_id', 'ai_enabled', 'model_name', 'api_key', 'base_url',
+            'api_type', 'max_discount_percent', 'max_discount_amount',
+            'max_bargain_rounds', 'custom_prompts', 'created_at', 'updated_at',
+        ]),
+        'ai_conversations': frozenset([
+            'id', 'cookie_id', 'chat_id', 'user_id', 'item_id', 'role',
+            'content', 'intent', 'bargain_count', 'created_at',
+        ]),
+        'ai_item_cache': frozenset([
+            'item_id', 'data', 'price', 'description', 'last_updated',
+        ]),
+        'cards': frozenset([
+            'id', 'name', 'type', 'api_config', 'text_content', 'data_content',
+            'image_url', 'description', 'enabled', 'delay_seconds',
+            'is_multi_spec', 'spec_name', 'spec_value', 'spec_name_2',
+            'spec_value_2', 'user_id', 'created_at', 'updated_at',
+        ]),
+        'delivery_rules': frozenset([
+            'id', 'keyword', 'card_id', 'delivery_count', 'enabled',
+            'description', 'delivery_times', 'created_at', 'updated_at',
+        ]),
+    }
+
+    def _validate_table_name(self, table_name: str) -> None:
+        """校验表名是否在白名单中，防止SQL注入。"""
+        if table_name not in self._VALID_TABLES:
+            raise ValueError(f"非法表名: {table_name}")
+
+    def _validate_columns(self, table_name: str, columns: list) -> list:
+        """校验列名是否在白名单中，过滤非法列名，防止SQL注入。"""
+        allowed = self._VALID_COLUMNS.get(table_name)
+        if allowed is None:
+            # 没有列白名单的表，用正则确保列名只含安全字符
+            safe = []
+            for col in columns:
+                if isinstance(col, str) and re.fullmatch(r'[a-zA-Z_][a-zA-Z0-9_]*', col):
+                    safe.append(col)
+                else:
+                    logger.warning(f"备份导入时过滤非法列名: {col!r} (表 {table_name})")
+            return safe
+        valid = []
+        for col in columns:
+            if col in allowed:
+                valid.append(col)
+            else:
+                logger.warning(f"备份导入时过滤非法列名: {col!r} (表 {table_name})")
+        return valid
+
     def __init__(self, db_path: str = None):
         """初始化数据库连接和表结构"""
         # 支持环境变量配置数据库路径
@@ -3746,14 +3839,24 @@ Cookie数量: {cookie_count}
                 # 导入数据
                 data = backup_data['data']
                 for table_name, table_data in data.items():
-                    if table_name not in ['cookies', 'keywords', 'cookie_status', 'cards',
-                                        'delivery_rules', 'default_replies', 'notification_channels',
-                                        'message_notifications', 'system_settings', 'item_info',
-                                        'ai_reply_settings', 'ai_conversations', 'ai_item_cache']:
+                    if table_name not in self._VALID_TABLES:
                         continue
 
-                    columns = table_data['columns']
+                    raw_columns = table_data['columns']
+                    # 校验列名，过滤可能的注入字符
+                    columns = self._validate_columns(table_name, raw_columns)
+                    if not columns:
+                        continue
+
                     rows = table_data['rows']
+
+                    # 如果列名被过滤过，需要将行数据重新映射到保留的列
+                    if columns != raw_columns:
+                        col_index_map = {col: raw_columns.index(col) for col in columns if col in raw_columns}
+                        columns = list(col_index_map.keys())
+                        if not columns:
+                            continue
+                        rows = [[row[idx] for idx in [col_index_map[c] for c in columns]] for row in rows]
 
                     if not rows:
                         continue
@@ -4189,7 +4292,7 @@ Cookie数量: {cookie_count}
             except Exception as e:
                 logger.error(f"读取SMTP系统设置失败: {e}")
                 # 如果读取配置失败，使用API方式
-                return await self._send_email_via_api(email, subject, text_content)
+                return False
 
             # 检查SMTP配置是否完整
             if smtp_server and smtp_port and smtp_user and smtp_password:
@@ -4201,7 +4304,7 @@ Cookie数量: {cookie_count}
             else:
                 # 配置不完整，使用API方式发送
                 logger.info(f"SMTP配置不完整，使用API方式发送验证码邮件: {email}")
-                return await self._send_email_via_api(email, subject, text_content)
+                return False
 
         except Exception as e:
             logger.error(f"发送验证码邮件异常: {e}")
@@ -4244,39 +4347,6 @@ Cookie数量: {cookie_count}
             # SMTP发送失败，尝试使用API方式
             logger.info(f"SMTP发送失败，尝试使用API方式发送: {email}")
             return await self._send_email_via_api(email, subject, text_content)
-
-    async def _send_email_via_api(self, email: str, subject: str, text_content: str) -> bool:
-        """使用API方式发送邮件"""
-        try:
-            import aiohttp
-
-            # 使用GET请求发送邮件
-            api_url = "https://dy.zhinianboke.com/api/emailSend"
-            params = {
-                'subject': subject,
-                'receiveUser': email,
-                'sendHtml': text_content
-            }
-
-            async with aiohttp.ClientSession() as session:
-                try:
-                    logger.info(f"使用API发送验证码邮件: {email}")
-                    async with session.get(api_url, params=params, timeout=15) as response:
-                        response_text = await response.text()
-                        logger.info(f"邮件API响应: {response.status}")
-
-                        if response.status == 200:
-                            logger.info(f"验证码邮件发送成功(API): {email}")
-                            return True
-                        else:
-                            logger.error(f"API发送验证码邮件失败: {email}, 状态码: {response.status}, 响应: {response_text[:200]}")
-                            return False
-                except Exception as e:
-                    logger.error(f"API邮件发送异常: {email}, 错误: {e}")
-                    return False
-        except Exception as e:
-            logger.error(f"API邮件发送方法异常: {e}")
-            return False
 
     # ==================== 卡券管理方法 ====================
 
@@ -6628,6 +6698,7 @@ Cookie数量: {cookie_count}
 
     def get_table_data(self, table_name: str):
         """获取指定表的所有数据"""
+        self._validate_table_name(table_name)
         with self.lock:
             try:
                 cursor = self.conn.cursor()
@@ -7543,6 +7614,7 @@ Cookie数量: {cookie_count}
 
     def delete_table_record(self, table_name: str, record_id: str):
         """删除指定表的指定记录"""
+        self._validate_table_name(table_name)
         with self.lock:
             try:
                 cursor = self.conn.cursor()
@@ -7591,6 +7663,7 @@ Cookie数量: {cookie_count}
 
     def clear_table_data(self, table_name: str):
         """清空指定表的所有数据"""
+        self._validate_table_name(table_name)
         with self.lock:
             try:
                 cursor = self.conn.cursor()

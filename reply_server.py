@@ -61,7 +61,7 @@ KEYWORDS_FILE = Path(__file__).parent / "回复关键字.txt"
 
 # 简单的用户认证配置
 ADMIN_USERNAME = "admin"
-DEFAULT_ADMIN_PASSWORD = "admin123"  # 系统初始化时的默认密码
+DEFAULT_ADMIN_PASSWORD = "5JuYAGtYDahs9dDA"  # 系统初始化时的默认密码
 SESSION_TOKENS = {}  # 存储会话token: {token: {'user_id': int, 'username': str, 'timestamp': float}}
 TOKEN_EXPIRE_TIME = 24 * 60 * 60  # token过期时间：24小时
 
@@ -2199,7 +2199,7 @@ async def register(request: RegisterRequest):
 
 # 固定的API秘钥（生产环境中应该从配置文件或环境变量读取）
 # 注意：现在从系统设置中读取QQ回复消息秘钥
-API_SECRET_KEY = "xianyu_api_secret_2024"  # 保留作为后备
+API_SECRET_KEY = "xSr7kSCz0bDs76tRwOpiSk1J"  # 保留作为后备
 
 class SendMessageRequest(BaseModel):
     api_key: str
@@ -2257,15 +2257,6 @@ async def send_message_api(request: SendMessageRequest):
                 success=False,
                 message="API秘钥不能为空"
             )
-
-        # 特殊测试秘钥处理
-        if cleaned_api_key == "zhinina_test_key":
-            logger.info("使用测试秘钥，直接返回成功")
-            return SendMessageResponse(
-                success=True,
-                message="接口验证成功"
-            )
-
         # 验证API秘钥
         if not verify_api_key(cleaned_api_key):
             logger.warning(f"API秘钥验证失败: {mask_sensitive_text(cleaned_api_key)}")
@@ -8847,43 +8838,6 @@ def get_item_reply(cookie_id: str, item_id: str, current_user: Dict[str, Any] = 
 
 
 # ------------------------- 数据库备份和恢复接口 -------------------------
-
-@app.get('/admin/backup/download')
-def download_database_backup(admin_user: Dict[str, Any] = Depends(require_admin)):
-    """下载数据库备份文件（管理员专用）"""
-    import os
-    from fastapi.responses import FileResponse
-    from datetime import datetime
-
-    try:
-        log_with_user('info', "请求下载数据库备份", admin_user)
-
-        # 使用db_manager的实际数据库路径
-        from db_manager import db_manager
-        db_file_path = db_manager.db_path
-
-        # 检查数据库文件是否存在
-        if not os.path.exists(db_file_path):
-            log_with_user('error', f"数据库文件不存在: {db_file_path}", admin_user)
-            raise HTTPException(status_code=404, detail="数据库文件不存在")
-
-        # 生成带时间戳的文件名
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        download_filename = f"xianyu_backup_{timestamp}.db"
-
-        log_with_user('info', f"开始下载数据库备份: {download_filename}", admin_user)
-
-        return FileResponse(
-            path=db_file_path,
-            filename=download_filename,
-            media_type='application/octet-stream'
-        )
-
-    except HTTPException:
-        raise
-    except Exception as e:
-        log_with_user('error', f"下载数据库备份失败: {str(e)}", admin_user)
-        raise HTTPException(status_code=500, detail=str(e))
 
 @app.post('/admin/backup/upload')
 async def upload_database_backup(admin_user: Dict[str, Any] = Depends(require_admin),

@@ -8528,58 +8528,6 @@ class XianyuLive:
             # 兼容旧格式（直接字符串）
             return {"config": config}
 
-    async def _send_qq_notification(self, config_data: dict, message: str):
-        """发送QQ通知"""
-        try:
-            import aiohttp
-
-            logger.info(f"📱 QQ通知 - 开始处理配置数据: {config_data}")
-
-            # 解析配置（QQ号码）
-            qq_number = config_data.get('qq_number') or config_data.get('config', '')
-            qq_number = qq_number.strip() if qq_number else ''
-
-            logger.info(f"📱 QQ通知 - 解析到QQ号码: {qq_number}")
-
-            if not qq_number:
-                logger.warning("📱 QQ通知 - QQ号码配置为空，无法发送通知")
-                return False
-
-            # 构建请求URL
-            api_url = "http://36.111.68.231:3000/sendPrivateMsg"
-            params = {
-                'qq': qq_number,
-                'msg': message
-            }
-
-            logger.info(f"📱 QQ通知 - 请求URL: {api_url}")
-            logger.info(f"📱 QQ通知 - 请求参数: qq={qq_number}, msg长度={len(message)}")
-
-            # 发送GET请求
-            async with aiohttp.ClientSession() as session:
-                async with session.get(api_url, params=params, timeout=10) as response:
-                    response_text = await response.text()
-                    logger.info(f"📱 QQ通知 - 响应状态: {response.status}")
-
-                    # 需求：502 视为成功，且不打印返回内容
-                    if response.status == 502:
-                        logger.info(f"📱 QQ通知发送成功: {qq_number} (状态码: {response.status})")
-                        return True
-                    elif response.status == 200:
-                        logger.info(f"📱 QQ通知发送成功: {qq_number} (状态码: {response.status})")
-                        logger.warning(f"📱 QQ通知 - 响应内容: {response_text}")
-                        return True
-                    else:
-                        logger.warning(f"📱 QQ通知发送失败: HTTP {response.status}")
-                        logger.warning(f"📱 QQ通知 - 响应内容: {response_text}")
-                        return False
-
-        except Exception as e:
-            logger.error(f"📱 发送QQ通知异常: {self._safe_str(e)}")
-            import traceback
-            logger.error(f"📱 QQ通知异常详情: {traceback.format_exc()}")
-            return False
-
     async def _send_dingtalk_notification(self, config_data: dict, message: str):
         """发送钉钉通知"""
         try:

@@ -216,24 +216,6 @@ def build_face_verify_notification(
     )
 
 
-async def _send_qq_notification(config_data: Dict[str, Any], message: str, *, account_id: str = '') -> bool:
-    qq_number = (config_data.get('qq_number') or config_data.get('config', '') or '').strip()
-    if not qq_number:
-        logger.warning(f"【{account_id}】QQ通知配置为空")
-        return False
-
-    api_url = 'http://36.111.68.231:3000/sendPrivateMsg'
-    params = {'qq': qq_number, 'msg': message}
-
-    async with aiohttp.ClientSession() as session:
-        async with session.get(api_url, params=params, timeout=10) as response:
-            if response.status in (200, 502):
-                logger.info(f"【{account_id}】QQ通知发送成功")
-                return True
-            logger.warning(f"【{account_id}】QQ通知发送失败: HTTP {response.status}")
-            return False
-
-
 async def _send_dingtalk_notification(config_data: Dict[str, Any], message: str, *, title: str, account_id: str = '') -> bool:
     webhook_url = (config_data.get('webhook_url') or config_data.get('config', '') or '').strip()
     secret = config_data.get('secret', '')
@@ -482,7 +464,7 @@ async def _send_telegram_notification(config_data: Dict[str, Any], message: str,
 async def send_channel_notification(channel_type: Any, config_data: Dict[str, Any], message: str, *, title: str = '闲鱼管理系统通知', notification_type: str = 'info', attachment_path: Optional[str] = None, account_id: str = '') -> bool:
     normalized_type = normalize_channel_type(channel_type)
     if normalized_type == 'qq':
-        return await _send_qq_notification(config_data, message, account_id=account_id)
+        
     if normalized_type == 'dingtalk':
         return await _send_dingtalk_notification(config_data, message, title=title, account_id=account_id)
     if normalized_type == 'feishu':
