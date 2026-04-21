@@ -7661,43 +7661,105 @@ class XianyuLive:
             item_url = f"https://h5.m.goofish.com/item?id={item_id}"
             logger.info(f"访问移动版商品页面: {item_url}")
 
-            # 访问页面
-            await page.goto(item_url, wait_until='networkidle', timeout=30000)
+            # 访问页面（使用 domcontentloaded 更快，避免 networkidle 卡住）
+            try:
+                await page.goto(item_url, wait_until='domcontentloaded', timeout=30000)
+            except Exception as goto_err:
+                logger.warning(f"页面加载超时，重试等待: {item_id}, {self._safe_str(goto_err)}")
+                await asyncio.sleep(3)
 
-            # 等待页面完全加载
-            await asyncio.sleep(2)
+            # 等待页面框架渲染完成
+            await asyncio.sleep(5)
+
+            # 关闭可能遮挡内容的弹窗（登录引导、App下载引导等）
+            try:
+                for dismiss_sel in ['[class*="close"]', '[class*="Close"]', '[class*="dismiss"]', '[class*="cancel"]', '.modal-close', '.dialog-close']:
+                    dismiss_btns = await page.query_selector_all(dismiss_sel)
+                    for btn in dismiss_btns:
+                        try:
+                            is_visible = await btn.is_visible()
+                            if is_visible:
+                                await btn.click()
+                                await asyncio.sleep(0.5)
+                        except:
+                            pass
+            except:
+                pass
 
             # 获取商品详情内容
             detail_text = ""
             try:
-                # 移动版页面选择器列表（按优先级排序）
-                selectors = [
-                    '.detailDesc--descText--1FMDTCm',  # 移动版商品详情主选择器
-                    'span.rax-text-v2.detailDesc--descText--1FMDTCm',  # 完整选择器
-                    '[class*="detailDesc--descText"]',  # 匹配包含detailDesc--descText的类名
-                    '[class*="descText"]',  # 匹配包含descText的类名
-                    '.desc--GaIUKUQY',  # PC版选择器（备用）
-                    '.detail-desc',     # 常见的详情选择器
-                    '.item-desc',       # 商品描述
-                    '[class*="desc"]',  # 包含desc的类名
+                # 先等待描述容器出现（给予较长超时，适应Docker慢环境）
+                container_selectors = [
+                    '[class*="detailDesc--descText"]',
+                    '[class*="detailDesc--descWrap"]',
+                    '[class*="descText"]',
                 ]
-                
-                for selector in selectors:
+                found_selector = None
+                for selector in container_selectors:
                     try:
-                        # 尝试等待元素出现（短超时）
-                        await page.wait_for_selector(selector, timeout=3000)
+                        await page.wait_for_selector(selector, timeout=8000)
+                        found_selector = selector
+                        break
+                    except:
+                        continue
+
+                if found_selector:
+                    detail_element = await page.query_selector(found_selector)
+                    if detail_element:
+                        detail_text = await detail_element.inner_text()
+                        if detail_text and len(detail_text.strip()) > 0:
+                            logger.info(f"成功获取商品详情（选择器: {found_selector}）: {item_id}, 长度: {len(detail_text)}")
+                            return detail_text.strip()
+
+                # 备用选择器
+                fallback_selectors = ['.detail-desc', '.item-desc', '[class*="descWrap"]']
+                for selector in fallback_selectors:
+                    try:
                         detail_element = await page.query_selector(selector)
                         if detail_element:
                             detail_text = await detail_element.inner_text()
                             if detail_text and len(detail_text.strip()) > 0:
-                                logger.info(f"成功获取商品详情（选择器: {selector}）: {item_id}, 长度: {len(detail_text)}")
+                                logger.info(f"成功获取商品详情（备用选择器: {selector}）: {item_id}, 长度: {len(detail_text)}")
                                 return detail_text.strip()
-                    except Exception as e:
-                        logger.debug(f"选择器 {selector} 未找到: {self._safe_str(e)}")
+                    except:
                         continue
-                
-                # 如果所有选择器都失败，尝试获取整个页面的文本内容
-                logger.warning(f"未找到特定详情元素，尝试获取整个页面内容: {item_id}")
+
+                # 选择器全部失败，尝试从页面 JS 数据中提取描述
+                logger.warning(f"选择器全部失败，尝试从页面数据提取描述: {item_id}")
+                desc_from_js = await page.evaluate('''() => {
+                    // 尝试从 window 全局变量中获取
+                    for (const key of Object.keys(window)) {
+                        try {
+                            const val = window[key];
+                            if (val && typeof val === 'object') {
+                                const str = JSON.stringify(val);
+                                const match = str.match(/"desc"\\s*:\\s*"([^"]{10,}?)"/);
+                                if (match) return match[1];
+                                const match2 = str.match(/"description"\\s*:\\s*"([^"]{10,}?)"/);
+                                if (match2) return match2[1];
+                            }
+                        } catch(e) {}
+                    }
+                    // 尝试找描述容器中最长的span文本
+                    const containers = document.querySelectorAll('[class*="descWrap"], [class*="descCollpase"], [class*="Detail--container"]');
+                    for (const c of containers) {
+                        const spans = c.querySelectorAll('span');
+                        let longest = '';
+                        for (const s of spans) {
+                            const t = s.innerText.trim();
+                            if (t.length > longest.length && t.length > 10) longest = t;
+                        }
+                        if (longest) return longest;
+                    }
+                    return '';
+                }''')
+                if desc_from_js:
+                    logger.info(f"从页面JS数据中获取到描述: {item_id}, 长度: {len(desc_from_js)}")
+                    return desc_from_js
+
+                # 最后兜底：获取页面文本
+                logger.warning(f"未找到特定详情元素，尝试获取页面内容: {item_id}")
                 body_text = await page.inner_text('body')
                 if body_text:
                     logger.info(f"获取到页面整体内容: {item_id}, 长度: {len(body_text)}")
