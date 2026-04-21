@@ -7456,7 +7456,7 @@ class XianyuLive:
             return False
 
     async def fetch_item_detail_from_api(self, item_id: str, force_refresh: bool = False) -> str:
-        """获取商品详情（使用浏览器获取，支持24小时缓存）
+        """获取商品详情（优先API获取，失败回退浏览器，支持24小时缓存）
 
         Args:
             item_id: 商品ID
@@ -7495,20 +7495,55 @@ class XianyuLive:
             else:
                 logger.info(f"强制刷新商品详情，跳过缓存: {item_id}")
 
-            # 2. 尝试使用浏览器获取商品详情
+            # 2. 优先使用浏览器获取商品详情
             detail_from_browser = await self._fetch_item_detail_from_browser(item_id)
             if detail_from_browser:
-                # 保存到缓存（带大小限制）
                 await self._add_to_item_cache(item_id, detail_from_browser)
                 logger.info(f"成功通过浏览器获取商品详情: {item_id}, 长度: {len(detail_from_browser)}")
                 return detail_from_browser
 
-            # 浏览器获取失败
-            logger.warning(f"浏览器获取商品详情失败: {item_id}")
+            # 3. 浏览器失败，回退API获取
+            detail_from_api = await self._fetch_item_detail_from_api(item_id)
+            if detail_from_api:
+                await self._add_to_item_cache(item_id, detail_from_api)
+                logger.info(f"成功通过API获取商品详情: {item_id}, 长度: {len(detail_from_api)}")
+                return detail_from_api
+
+            logger.warning(f"获取商品详情失败(浏览器和API均失败): {item_id}")
             return ""
 
         except Exception as e:
             logger.error(f"获取商品详情异常: {item_id}, 错误: {self._safe_str(e)}")
+            return ""
+
+    async def _fetch_item_detail_from_api(self, item_id: str) -> str:
+        """通过 mtop.taobao.idle.pc.detail API 获取商品描述"""
+        try:
+            result = await self.get_item_info(item_id)
+            if not result or isinstance(result, str) or 'error' in result:
+                logger.warning(f"API获取商品信息失败: {item_id}")
+                return ""
+
+            data = result.get('data', {})
+            # 提取商品描述
+            desc = data.get('desc', '')
+            if desc:
+                logger.info(f"API获取到商品描述: {item_id}, 长度: {len(desc)}")
+                return desc
+
+            # 尝试从 itemDO 中获取
+            item_do = data.get('itemDO', {})
+            if isinstance(item_do, dict):
+                desc = item_do.get('desc', '') or item_do.get('description', '')
+                if desc:
+                    logger.info(f"API从itemDO获取到商品描述: {item_id}, 长度: {len(desc)}")
+                    return desc
+
+            logger.warning(f"API返回数据中未找到商品描述: {item_id}")
+            return ""
+
+        except Exception as e:
+            logger.warning(f"API获取商品描述异常: {item_id}, 错误: {self._safe_str(e)}")
             return ""
 
     async def _add_to_item_cache(self, item_id: str, detail: str):
