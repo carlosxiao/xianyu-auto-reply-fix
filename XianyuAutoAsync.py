@@ -7666,28 +7666,15 @@ class XianyuLive:
             )
 
             # 创建移动设备浏览器上下文（模拟iPhone）
+            # 不设置登录Cookie，公开商品页无需登录即可查看描述
+            # 设置Cookie反而可能触发反爬机制或在Docker环境下导致页面加载失败
             context = await browser.new_context(
-                viewport={'width': 375, 'height': 812},  # iPhone X/11/12 尺寸
+                viewport={'width': 375, 'height': 812},
                 user_agent='Mozilla/5.0 (iPhone; CPU iPhone OS 16_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/15E148 AliApp(TB/11.15.0)',
-                device_scale_factor=3,  # iPhone 的屏幕缩放比例
+                device_scale_factor=3,
                 is_mobile=True,
                 has_touch=True
             )
-
-            # 设置Cookie
-            cookies = []
-            for cookie_pair in self.cookies_str.split('; '):
-                if '=' in cookie_pair:
-                    name, value = cookie_pair.split('=', 1)
-                    cookies.append({
-                        'name': name.strip(),
-                        'value': value.strip(),
-                        'domain': '.goofish.com',
-                        'path': '/'
-                    })
-
-            await context.add_cookies(cookies)
-            logger.info(f"已设置 {len(cookies)} 个Cookie（移动模式）")
 
             # 创建页面
             page = await context.new_page()
@@ -7957,43 +7944,42 @@ class XianyuLive:
             max_concurrent = auto_fetch_config.get('max_concurrent', 3)
             retry_delay = auto_fetch_config.get('retry_delay', 0.5)
 
-            # 限制并发数量，避免对API服务器造成压力
-            semaphore = asyncio.Semaphore(max_concurrent)
-
+            # 浏览器获取商品详情开销大，串行执行避免Docker资源耗尽
             async def fetch_single_item_detail(item_info):
-                async with semaphore:
-                    try:
-                        item_id = item_info['item_id']
-                        item_title = item_info['item_title']
+                try:
+                    item_id = item_info['item_id']
+                    item_title = item_info['item_title']
 
-                        # 获取商品详情
-                        item_detail_text = await self.fetch_item_detail_from_api(
-                            item_id,
-                            force_refresh=force_refresh,
-                        )
+                    # 获取商品详情
+                    item_detail_text = await self.fetch_item_detail_from_api(
+                        item_id,
+                        force_refresh=force_refresh,
+                    )
 
-                        if item_detail_text:
-                            # 保存详情到数据库
-                            success = await self.save_item_detail_only(item_id, item_detail_text)
-                            if success:
-                                logger.info(f"✅ 成功获取并保存商品详情: {item_id} - {item_title}")
-                                return 1
-                            else:
-                                logger.warning(f"❌ 获取详情成功但保存失败: {item_id}")
+                    if item_detail_text:
+                        # 保存详情到数据库
+                        success = await self.save_item_detail_only(item_id, item_detail_text)
+                        if success:
+                            logger.info(f"✅ 成功获取并保存商品详情: {item_id} - {item_title}")
+                            return 1
                         else:
-                            logger.warning(f"❌ 未能获取商品详情: {item_id} - {item_title}")
+                            logger.warning(f"❌ 获取详情成功但保存失败: {item_id}")
+                    else:
+                        logger.warning(f"❌ 未能获取商品详情: {item_id} - {item_title}")
 
-                        # 添加延迟，避免请求过于频繁
-                        await asyncio.sleep(retry_delay)
-                        return 0
+                    # 添加延迟，避免请求过于频繁
+                    await asyncio.sleep(retry_delay)
+                    return 0
 
-                    except Exception as e:
-                        logger.error(f"获取单个商品详情异常: {item_info.get('item_id', 'unknown')}, 错误: {self._safe_str(e)}")
-                        return 0
+                except Exception as e:
+                    logger.error(f"获取单个商品详情异常: {item_info.get('item_id', 'unknown')}, 错误: {self._safe_str(e)}")
+                    return 0
 
-            # 并发获取所有商品详情
-            tasks = [fetch_single_item_detail(item_info) for item_info in items_need_detail]
-            results = await asyncio.gather(*tasks, return_exceptions=True)
+            # 串行获取商品详情（浏览器方式并发会耗尽Docker资源）
+            results = []
+            for item_info in items_need_detail:
+                result = await fetch_single_item_detail(item_info)
+                results.append(result)
 
             # 统计成功数量
             for result in results:
